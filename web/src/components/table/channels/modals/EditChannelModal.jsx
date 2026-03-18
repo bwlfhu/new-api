@@ -904,6 +904,8 @@ const EditChannelModal = (props) => {
             parsedSettings.allow_safety_identifier || false;
           data.allow_include_obfuscation =
             parsedSettings.allow_include_obfuscation || false;
+          data.skip_v1_in_responses_path =
+            parsedSettings.skip_v1_in_responses_path || false;
           data.allow_inference_geo =
             parsedSettings.allow_inference_geo || false;
           data.claude_beta_query = parsedSettings.claude_beta_query || false;
@@ -934,6 +936,7 @@ const EditChannelModal = (props) => {
           data.disable_store = false;
           data.allow_safety_identifier = false;
           data.allow_include_obfuscation = false;
+          data.skip_v1_in_responses_path = false;
           data.allow_inference_geo = false;
           data.claude_beta_query = false;
           data.upstream_model_update_check_enabled = false;
@@ -1744,6 +1747,8 @@ const EditChannelModal = (props) => {
           localInputs.allow_safety_identifier === true;
         settings.allow_include_obfuscation =
           localInputs.allow_include_obfuscation === true;
+        settings.skip_v1_in_responses_path =
+          localInputs.skip_v1_in_responses_path === true;
       }
       if (localInputs.type === 14) {
         settings.allow_inference_geo = localInputs.allow_inference_geo === true;
