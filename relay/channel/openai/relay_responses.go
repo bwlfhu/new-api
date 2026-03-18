@@ -80,6 +80,9 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	var responseTextBuilder strings.Builder
 	var streamErr *types.NewAPIError
 	streamStarted := false
+	sawCompleted := false
+	requestID := c.GetString(common.RequestIdKey)
+	logger.LogInfo(c, fmt.Sprintf("responses stream begin: request_id=%s model=%s channel_id=%d channel_type=%d is_stream=%v relay_mode=%d", requestID, info.UpstreamModelName, info.ChannelId, info.ChannelType, info.IsStream, info.RelayMode))
 
 	helper.StreamScannerHandler(c, resp, info, func(data string) bool {
 
@@ -87,6 +90,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		var streamResponse dto.ResponsesStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResponse); err == nil {
 			if streamResponse.Type == "response.error" || streamResponse.Type == "response.failed" {
+				logger.LogInfo(c, fmt.Sprintf("responses stream event-error: request_id=%s type=%s stream_started=%v writer_written=%v", requestID, streamResponse.Type, streamStarted, c.Writer.Written()))
 				if !streamStarted && !c.Writer.Written() {
 					if streamResponse.Response != nil {
 						if oaiErr := streamResponse.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
@@ -104,6 +108,8 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			streamStarted = streamStarted || c.Writer.Written()
 			switch streamResponse.Type {
 			case "response.completed":
+				sawCompleted = true
+				logger.LogInfo(c, fmt.Sprintf("responses stream completed: request_id=%s", requestID))
 				if streamResponse.Response != nil {
 					if streamResponse.Response.Usage != nil {
 						if streamResponse.Response.Usage.InputTokens != 0 {
@@ -148,8 +154,10 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	})
 
 	if streamErr != nil {
+		logger.LogInfo(c, fmt.Sprintf("responses stream return-error: request_id=%s wrote_any=%v saw_completed=%v err=%s", requestID, streamStarted || c.Writer.Written(), sawCompleted, streamErr.Error()))
 		return nil, streamErr
 	}
+	logger.LogInfo(c, fmt.Sprintf("responses stream end: request_id=%s wrote_any=%v saw_completed=%v usage_total=%d", requestID, streamStarted || c.Writer.Written(), sawCompleted, usage.TotalTokens))
 
 	if usage.CompletionTokens == 0 {
 		// 计算输出文本的 token 数量
