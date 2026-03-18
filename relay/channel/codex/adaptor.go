@@ -149,27 +149,32 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	channel.SetupApiRequestHeader(info, c, req)
 
 	key := strings.TrimSpace(info.ApiKey)
-	if !strings.HasPrefix(key, "{") {
-		return errors.New("codex channel: key must be a JSON object")
+	if key == "" {
+		return errors.New("codex channel: empty key")
 	}
 
-	oauthKey, err := ParseOAuthKey(key)
-	if err != nil {
-		return err
-	}
+	if strings.HasPrefix(key, "{") {
+		oauthKey, err := ParseOAuthKey(key)
+		if err != nil {
+			return err
+		}
 
-	accessToken := strings.TrimSpace(oauthKey.AccessToken)
-	accountID := strings.TrimSpace(oauthKey.AccountID)
+		accessToken := strings.TrimSpace(oauthKey.AccessToken)
+		accountID := strings.TrimSpace(oauthKey.AccountID)
 
-	if accessToken == "" {
-		return errors.New("codex channel: access_token is required")
-	}
-	if accountID == "" {
-		return errors.New("codex channel: account_id is required")
-	}
+		if accessToken == "" {
+			return errors.New("codex channel: access_token is required")
+		}
+		if accountID == "" {
+			return errors.New("codex channel: account_id is required")
+		}
 
-	req.Set("Authorization", "Bearer "+accessToken)
-	req.Set("chatgpt-account-id", accountID)
+		req.Set("Authorization", "Bearer "+accessToken)
+		req.Set("chatgpt-account-id", accountID)
+	} else {
+		req.Set("Authorization", "Bearer "+key)
+		req.Del("chatgpt-account-id")
+	}
 
 	if req.Get("OpenAI-Beta") == "" {
 		req.Set("OpenAI-Beta", "responses=experimental")
