@@ -32,10 +32,12 @@ func Distribute() func(c *gin.Context) {
 		var channel *model.Channel
 		channelId, ok := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId)
 		modelRequest, shouldSelectChannel, err := getModelRequest(c)
+		requestId := c.GetString(common.RequestIdKey)
 		if err != nil {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
+		common.SysLog(fmt.Sprintf("distribute request: request_id=%s path=%s method=%s model=%s should_select=%v", requestId, c.Request.URL.Path, c.Request.Method, modelRequest.Model, shouldSelectChannel))
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
 			if err != nil {
@@ -135,11 +137,6 @@ func Distribute() func(c *gin.Context) {
 							showGroup = fmt.Sprintf("auto(%s)", selectGroup)
 						}
 						message := i18n.T(c, i18n.MsgDistributorGetChannelFailed, map[string]any{"Group": showGroup, "Model": modelRequest.Model, "Error": err.Error()})
-						// 如果错误，但是渠道不为空，说明是数据库一致性问题
-						//if channel != nil {
-						//	common.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
-						//	message = "数据库一致性已被破坏，请联系管理员"
-						//}
 						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, types.ErrorCodeModelNotFound)
 						return
 					}
@@ -151,6 +148,11 @@ func Distribute() func(c *gin.Context) {
 			}
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
+		if channel != nil {
+			common.SysLog(fmt.Sprintf("distribute selected-channel: request_id=%s channel_id=%d channel_type=%d model=%s", requestId, channel.Id, channel.Type, modelRequest.Model))
+		} else {
+			common.SysLog(fmt.Sprintf("distribute selected-channel: request_id=%s channel=nil model=%s should_select=%v", requestId, modelRequest.Model, shouldSelectChannel))
+		}
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
 		c.Next()
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
@@ -187,7 +189,11 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		} else {
 			midjourneyRequest := dto.MidjourneyRequest{}
 			err = common.UnmarshalBodyReusable(c, &midjourneyRequest)
-			if err != nil {
+			requestId := c.GetString(common.RequestIdKey)
+		if err == nil {
+			common.SysLog(fmt.Sprintf("distribute request: request_id=%s path=%s method=%s model=%s should_select=%v", requestId, c.Request.URL.Path, c.Request.Method, modelRequest.Model, shouldSelectChannel))
+		}
+		if err != nil {
 				return nil, false, errors.New(i18n.T(c, i18n.MsgDistributorInvalidMidjourney, map[string]any{"Error": err.Error()}))
 			}
 			midjourneyModel, mjErr, success := service.GetMjRequestModel(relayMode, &midjourneyRequest)
@@ -230,7 +236,11 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		if c.Request.Method == http.MethodPost {
 			relayMode = relayconstant.RelayModeVideoSubmit
 			req, err := getModelFromRequest(c)
-			if err != nil {
+			requestId := c.GetString(common.RequestIdKey)
+		if err == nil {
+			common.SysLog(fmt.Sprintf("distribute request: request_id=%s path=%s method=%s model=%s should_select=%v", requestId, c.Request.URL.Path, c.Request.Method, modelRequest.Model, shouldSelectChannel))
+		}
+		if err != nil {
 				return nil, false, err
 			}
 			if req != nil {
@@ -245,7 +255,11 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		relayMode := relayconstant.RelayModeUnknown
 		if c.Request.Method == http.MethodPost {
 			req, err := getModelFromRequest(c)
-			if err != nil {
+			requestId := c.GetString(common.RequestIdKey)
+		if err == nil {
+			common.SysLog(fmt.Sprintf("distribute request: request_id=%s path=%s method=%s model=%s should_select=%v", requestId, c.Request.URL.Path, c.Request.Method, modelRequest.Model, shouldSelectChannel))
+		}
+		if err != nil {
 				return nil, false, err
 			}
 			modelRequest.Model = req.Model
@@ -267,6 +281,10 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		c.Set("relay_mode", relayMode)
 	} else if !strings.HasPrefix(c.Request.URL.Path, "/v1/audio/transcriptions") && !strings.Contains(c.Request.Header.Get("Content-Type"), "multipart/form-data") {
 		req, err := getModelFromRequest(c)
+		requestId := c.GetString(common.RequestIdKey)
+		if err == nil {
+			common.SysLog(fmt.Sprintf("distribute request: request_id=%s path=%s method=%s model=%s should_select=%v", requestId, c.Request.URL.Path, c.Request.Method, modelRequest.Model, shouldSelectChannel))
+		}
 		if err != nil {
 			return nil, false, err
 		}
@@ -323,6 +341,10 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 	if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") {
 		// playground chat completions
 		req, err := getModelFromRequest(c)
+		requestId := c.GetString(common.RequestIdKey)
+		if err == nil {
+			common.SysLog(fmt.Sprintf("distribute request: request_id=%s path=%s method=%s model=%s should_select=%v", requestId, c.Request.URL.Path, c.Request.Method, modelRequest.Model, shouldSelectChannel))
+		}
 		if err != nil {
 			return nil, false, err
 		}
