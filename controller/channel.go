@@ -79,12 +79,21 @@ func inferCodexCredentialModeFromKey(rawKey string) string {
 		return "api_key"
 	}
 
-	accessToken := strings.TrimSpace(fmt.Sprintf("%v", keyMap["access_token"]))
-	accountID := strings.TrimSpace(fmt.Sprintf("%v", keyMap["account_id"]))
-	if accessToken != "" && accountID != "" {
-		return "oauth_json"
+	accessTokenVal, accessTokenOk := keyMap["access_token"]
+	if !accessTokenOk || accessTokenVal == nil {
+		return "api_key"
 	}
-	return "api_key"
+	accountIDVal, accountIDOk := keyMap["account_id"]
+	if !accountIDOk || accountIDVal == nil {
+		return "api_key"
+	}
+
+	accessToken := strings.TrimSpace(fmt.Sprintf("%v", accessTokenVal))
+	accountID := strings.TrimSpace(fmt.Sprintf("%v", accountIDVal))
+	if accessToken == "" || accountID == "" {
+		return "api_key"
+	}
+	return "oauth_json"
 }
 
 func GetAllChannels(c *gin.Context) {

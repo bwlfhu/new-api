@@ -228,3 +228,49 @@ func TestValidateChannelCodexKeyValidation(t *testing.T) {
 		require.ErrorContains(t, err, "account_id")
 	})
 }
+
+func TestInferCodexCredentialModeFromKey(t *testing.T) {
+	tests := []struct {
+		name     string
+		rawKey   string
+		expected string
+	}{
+		{
+			name:     "plain api key",
+			rawKey:   "sk-codex-plain-api-key",
+			expected: "api_key",
+		},
+		{
+			name:     "valid oauth json",
+			rawKey:   `{"access_token":"token-123","account_id":"acct-456"}`,
+			expected: "oauth_json",
+		},
+		{
+			name:     "missing access_token",
+			rawKey:   `{"account_id":"acct-456"}`,
+			expected: "api_key",
+		},
+		{
+			name:     "missing account_id",
+			rawKey:   `{"access_token":"token-123"}`,
+			expected: "api_key",
+		},
+		{
+			name:     "other json object",
+			rawKey:   `{"foo":"bar"}`,
+			expected: "api_key",
+		},
+		{
+			name:     "leading whitespace with valid oauth json",
+			rawKey:   "  \n\t {\"access_token\":\"token-123\",\"account_id\":\"acct-456\"}",
+			expected: "oauth_json",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			actual := inferCodexCredentialModeFromKey(tc.rawKey)
+			require.Equal(t, tc.expected, actual)
+		})
+	}
+}
