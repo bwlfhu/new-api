@@ -3,6 +3,7 @@ package controller
 import (
 	"testing"
 
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/stretchr/testify/require"
@@ -164,4 +165,56 @@ func TestShouldSendUpstreamModelUpdateNotification(t *testing.T) {
 	require.True(t, shouldSendUpstreamModelUpdateNotification(baseTime+10000, 0, 4))
 	require.True(t, shouldSendUpstreamModelUpdateNotification(baseTime+90000, 7, 0))
 	require.True(t, shouldSendUpstreamModelUpdateNotification(baseTime+90001, 0, 0))
+}
+
+func TestValidateChannel_CodexKeyValidation(t *testing.T) {
+	t.Run("accept normal api key", func(t *testing.T) {
+		channel := &model.Channel{
+			Type: constant.ChannelTypeCodex,
+			Key:  "sk-codex-plain-api-key",
+		}
+
+		err := validateChannel(channel, true)
+		require.NoError(t, err)
+	})
+
+	t.Run("accept multiline api key", func(t *testing.T) {
+		channel := &model.Channel{
+			Type: constant.ChannelTypeCodex,
+			Key:  "sk-codex-key-1\nsk-codex-key-2",
+		}
+
+		err := validateChannel(channel, true)
+		require.NoError(t, err)
+	})
+
+	t.Run("accept valid oauth json", func(t *testing.T) {
+		channel := &model.Channel{
+			Type: constant.ChannelTypeCodex,
+			Key:  `{"access_token":"token-123","account_id":"acct-456"}`,
+		}
+
+		err := validateChannel(channel, true)
+		require.NoError(t, err)
+	})
+
+	t.Run("reject oauth json without access_token", func(t *testing.T) {
+		channel := &model.Channel{
+			Type: constant.ChannelTypeCodex,
+			Key:  `{"account_id":"acct-456"}`,
+		}
+
+		err := validateChannel(channel, true)
+		require.ErrorContains(t, err, "access_token")
+	})
+
+	t.Run("reject oauth json without account_id", func(t *testing.T) {
+		channel := &model.Channel{
+			Type: constant.ChannelTypeCodex,
+			Key:  `{"access_token":"token-123"}`,
+		}
+
+		err := validateChannel(channel, true)
+		require.ErrorContains(t, err, "account_id")
+	})
 }
