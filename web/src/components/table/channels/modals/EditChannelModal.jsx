@@ -989,8 +989,14 @@ const EditChannelModal = (props) => {
         data.base_url = 'https://ark.cn-beijing.volces.com';
       }
 
+      const codexModeFromBackend = data.codex_credential_mode;
       const inferredCodexMode =
-        data.type === 57 ? inferCodexCredentialMode(data.key) : 'api_key';
+        data.type === 57
+          ? codexModeFromBackend === 'oauth_json' ||
+            codexModeFromBackend === 'api_key'
+            ? codexModeFromBackend
+            : inferCodexCredentialMode(data.key)
+          : 'api_key';
       data.codex_credential_mode = inferredCodexMode;
       setCodexCredentialMode(inferredCodexMode);
       if (data.type === 57 && inferredCodexMode === 'oauth_json') {

@@ -68,6 +68,25 @@ func clearChannelInfo(channel *model.Channel) {
 	}
 }
 
+func inferCodexCredentialModeFromKey(rawKey string) string {
+	trimmedKey := strings.TrimSpace(rawKey)
+	if !strings.HasPrefix(trimmedKey, "{") {
+		return "api_key"
+	}
+
+	var keyMap map[string]any
+	if err := common.Unmarshal([]byte(trimmedKey), &keyMap); err != nil {
+		return "api_key"
+	}
+
+	accessToken := strings.TrimSpace(fmt.Sprintf("%v", keyMap["access_token"]))
+	accountID := strings.TrimSpace(fmt.Sprintf("%v", keyMap["account_id"]))
+	if accessToken != "" && accountID != "" {
+		return "oauth_json"
+	}
+	return "api_key"
+}
+
 func GetAllChannels(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	channelData := make([]*model.Channel, 0)
@@ -371,6 +390,14 @@ func GetChannel(c *gin.Context) {
 	}
 	if channel != nil {
 		clearChannelInfo(channel)
+		if channel.Type == constant.ChannelTypeCodex {
+			rawKey, err := model.GetChannelKeyById(id)
+			if err != nil {
+				common.ApiError(c, err)
+				return
+			}
+			channel.CodexCredentialMode = inferCodexCredentialModeFromKey(rawKey)
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
