@@ -105,6 +105,29 @@ func ListPDEPTokens(ownerID int) ([]PDEPTokenItem, error) {
 func CreatePDEPToken(ownerID int, name string) (*PDEPTokenCreateResult, error) {
 	name = strings.TrimSpace(name)
 
+	const maxAttempts = 3
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		result, err := createPDEPTokenTx(ownerID, name)
+		if err == nil {
+			return result, nil
+		}
+		if !isPDEPLockConflictError(err) {
+			return nil, err
+		}
+		// SQLite 并发写可能直接返回 table is locked/deadlocked，重试后通常可读到冲突状态。
+		time.Sleep(10 * time.Millisecond)
+		if pdepTokenNameExists(ownerID, name) {
+			return nil, ErrPDEPTokenNameConflict
+		}
+	}
+
+	if pdepTokenNameExists(ownerID, name) {
+		return nil, ErrPDEPTokenNameConflict
+	}
+	return nil, errors.New("pdep token create failed due to lock conflict")
+}
+
+func createPDEPTokenTx(ownerID int, name string) (*PDEPTokenCreateResult, error) {
 	var result *PDEPTokenCreateResult
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var owner User
@@ -158,6 +181,22 @@ func CreatePDEPToken(ownerID int, name string) (*PDEPTokenCreateResult, error) {
 		return nil, err
 	}
 	return result, nil
+}
+
+func pdepTokenNameExists(ownerID int, name string) bool {
+	var count int64
+	err := DB.Model(&Token{}).Where("user_id = ? AND name = ?", ownerID, name).Count(&count).Error
+	return err == nil && count > 0
+}
+
+func isPDEPLockConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := strings.ToLower(err.Error())
+	return strings.Contains(errMsg, "database table is locked") ||
+		strings.Contains(errMsg, "database is deadlocked") ||
+		strings.Contains(errMsg, "database is locked")
 }
 
 func DeletePDEPToken(ownerID int, tokenID int) error {
