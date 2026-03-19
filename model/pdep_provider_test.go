@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -13,6 +15,13 @@ import (
 
 func setupPDEPProviderModelTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
+
+	previousDB := DB
+	previousLogDB := LOG_DB
+	previousUsingSQLite := common.UsingSQLite
+	previousUsingMySQL := common.UsingMySQL
+	previousUsingPostgreSQL := common.UsingPostgreSQL
+	previousRedisEnabled := common.RedisEnabled
 
 	common.UsingSQLite = true
 	common.UsingMySQL = false
@@ -27,11 +36,18 @@ func setupPDEPProviderModelTestDB(t *testing.T) *gorm.DB {
 	DB = db
 	LOG_DB = db
 
-	if err := db.AutoMigrate(&Token{}, &Log{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &Token{}, &Log{}); err != nil {
 		t.Fatalf("failed to migrate tables: %v", err)
 	}
 
 	t.Cleanup(func() {
+		DB = previousDB
+		LOG_DB = previousLogDB
+		common.UsingSQLite = previousUsingSQLite
+		common.UsingMySQL = previousUsingMySQL
+		common.UsingPostgreSQL = previousUsingPostgreSQL
+		common.RedisEnabled = previousRedisEnabled
+
 		sqlDB, err := db.DB()
 		if err == nil {
 			_ = sqlDB.Close()
@@ -39,6 +55,24 @@ func setupPDEPProviderModelTestDB(t *testing.T) *gorm.DB {
 	})
 
 	return db
+}
+
+func seedPDEPProviderOwnerUser(t *testing.T, db *gorm.DB, id int) {
+	t.Helper()
+
+	user := &User{
+		Id:          id,
+		Username:    fmt.Sprintf("owner_%d", id),
+		Password:    "password123",
+		Role:        common.RoleAdminUser,
+		Status:      common.UserStatusEnabled,
+		DisplayName: fmt.Sprintf("Owner %d", id),
+		Email:       fmt.Sprintf("owner_%d@example.com", id),
+		Group:       "default",
+	}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("failed to create owner user: %v", err)
+	}
 }
 
 func seedPDEPProviderToken(t *testing.T, db *gorm.DB, userID int, name string, key string) *Token {
@@ -84,12 +118,50 @@ func TestPDEPProvider_ListTokens_OnlyOwnerTokens(t *testing.T) {
 
 func TestPDEPProvider_CreateToken_NameConflictReturnsError(t *testing.T) {
 	db := setupPDEPProviderModelTestDB(t)
+	seedPDEPProviderOwnerUser(t, db, 2001)
 	seedPDEPProviderToken(t, db, 2001, "same-name", "abcd1234owner20010000000000000000000000000000")
 	seedPDEPProviderToken(t, db, 2002, "same-name", "abcd1234owner20020000000000000000000000000000")
 
 	_, err := CreatePDEPToken(2001, "same-name")
 	if !errors.Is(err, ErrPDEPTokenNameConflict) {
 		t.Fatalf("expected ErrPDEPTokenNameConflict, got %v", err)
+	}
+}
+
+func TestPDEPProvider_CreateToken_ConcurrentSameOwnerName(t *testing.T) {
+	db := setupPDEPProviderModelTestDB(t)
+	seedPDEPProviderOwnerUser(t, db, 2601)
+
+	var successCount int32
+	var conflictCount int32
+	var otherErrCount int32
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	createFn := func() {
+		defer wg.Done()
+		<-start
+		_, err := CreatePDEPToken(2601, "parallel-name")
+		if err == nil {
+			atomic.AddInt32(&successCount, 1)
+			return
+		}
+		if errors.Is(err, ErrPDEPTokenNameConflict) {
+			atomic.AddInt32(&conflictCount, 1)
+			return
+		}
+		atomic.AddInt32(&otherErrCount, 1)
+	}
+
+	go createFn()
+	go createFn()
+	close(start)
+	wg.Wait()
+
+	if successCount != 1 || conflictCount != 1 || otherErrCount != 0 {
+		t.Fatalf("expected 1 success + 1 conflict + 0 other err, got success=%d conflict=%d other=%d", successCount, conflictCount, otherErrCount)
 	}
 }
 

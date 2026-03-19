@@ -221,7 +221,7 @@ func TestPDEPProviderRoutes_ValidAuth_ReachesController(t *testing.T) {
 	db := setupPDEPProviderControllerTestDB(t)
 	seedPDEPProviderOwnerUser(t, db, 2101, common.UserStatusEnabled)
 	t.Setenv("PDEP_PROVIDER_SECRET", "valid-secret")
-	t.Setenv("PDEP_PROVIDER_OWNER_USER_ID", "2101")
+	t.Setenv("PDEP_PROVIDER_OWNER_USER_ID", " 2101 ")
 
 	testRoutes := []struct {
 		name       string

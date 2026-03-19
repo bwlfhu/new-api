@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ErrPDEPTokenNameConflict = errors.New("pdep token name conflict")
@@ -104,41 +105,57 @@ func ListPDEPTokens(ownerID int) ([]PDEPTokenItem, error) {
 func CreatePDEPToken(ownerID int, name string) (*PDEPTokenCreateResult, error) {
 	name = strings.TrimSpace(name)
 
-	var count int64
-	if err := DB.Model(&Token{}).Where("user_id = ? AND name = ?", ownerID, name).Count(&count).Error; err != nil {
-		return nil, err
-	}
-	if count > 0 {
-		return nil, ErrPDEPTokenNameConflict
-	}
+	var result *PDEPTokenCreateResult
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var owner User
+		lockErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id").
+			Where("id = ?", ownerID).
+			Take(&owner).Error
+		if lockErr != nil && !errors.Is(lockErr, gorm.ErrRecordNotFound) {
+			return lockErr
+		}
 
-	rawKey, err := common.GenerateKey()
+		var count int64
+		if err := tx.Model(&Token{}).Where("user_id = ? AND name = ?", ownerID, name).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return ErrPDEPTokenNameConflict
+		}
+
+		rawKey, err := common.GenerateKey()
+		if err != nil {
+			return err
+		}
+
+		now := common.GetTimestamp()
+		token := &Token{
+			UserId:       ownerID,
+			Name:         name,
+			Key:          rawKey,
+			Status:       common.TokenStatusEnabled,
+			CreatedTime:  now,
+			AccessedTime: now,
+			ExpiredTime:  -1,
+		}
+		if err := tx.Create(token).Error; err != nil {
+			return err
+		}
+
+		result = &PDEPTokenCreateResult{
+			ID:        strconv.Itoa(token.Id),
+			Name:      token.Name,
+			DisplayID: "token-" + strconv.Itoa(token.Id),
+			KeyPrefix: buildPDEPKeyPrefix(token.Key),
+			CreatedAt: toRFC3339UTC(token.CreatedTime),
+			IsActive:  isPDEPTokenActive(token, now),
+			Key:       buildPDEPKey(token.Key),
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	now := common.GetTimestamp()
-	token := &Token{
-		UserId:       ownerID,
-		Name:         name,
-		Key:          rawKey,
-		Status:       common.TokenStatusEnabled,
-		CreatedTime:  now,
-		AccessedTime: now,
-		ExpiredTime:  -1,
-	}
-	if err := DB.Create(token).Error; err != nil {
-		return nil, err
-	}
-
-	result := &PDEPTokenCreateResult{
-		ID:        strconv.Itoa(token.Id),
-		Name:      token.Name,
-		DisplayID: "token-" + strconv.Itoa(token.Id),
-		KeyPrefix: buildPDEPKeyPrefix(token.Key),
-		CreatedAt: toRFC3339UTC(token.CreatedTime),
-		IsActive:  isPDEPTokenActive(token, now),
-		Key:       buildPDEPKey(token.Key),
 	}
 	return result, nil
 }
@@ -155,5 +172,5 @@ func DeletePDEPToken(ownerID int, tokenID int) error {
 	if token.UserId != ownerID {
 		return ErrPDEPForbiddenToken
 	}
-	return DB.Delete(&token).Error
+	return token.Delete()
 }
