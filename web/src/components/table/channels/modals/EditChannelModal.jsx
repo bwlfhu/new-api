@@ -1547,8 +1547,16 @@ const EditChannelModal = (props) => {
 
       if (codexCredentialMode === 'oauth_json' && rawKey !== '') {
         const credential = parseCodexCredential(rawKey);
+        if (credential.mode === 'apikey') {
+          showInfo(
+            t(
+              'OAuth JSON 模式仅支持 JSON 格式凭据，请填写包含 access_token 和 account_id 的 OAuth JSON',
+            ),
+          );
+          return;
+        }
         if (credential.mode === 'invalid_json') {
-          showInfo(t('密钥必须是合法的 JSON 格式，或直接填写普通 API Key'));
+          showInfo(t('密钥必须是合法的 JSON 格式'));
           return;
         }
         if (credential.mode === 'invalid_json_object') {
@@ -1556,7 +1564,7 @@ const EditChannelModal = (props) => {
           return;
         }
         if (credential.mode === 'invalid_oauth_fields') {
-          showInfo(t('OAuth 密钥 JSON 必须包含 access_token 和 account_id；如果使用普通 API Key，请直接填写字符串'));
+          showInfo(t('OAuth 密钥 JSON 必须包含 access_token 和 account_id'));
           return;
         }
         if (credential.mode === 'oauth') {
