@@ -155,7 +155,6 @@ function type2secretPrompt(type) {
   }
 }
 
-
 function parseCodexCredential(raw) {
   const value = (raw || '').trim();
   if (value === '') return { mode: 'empty' };
@@ -177,6 +176,11 @@ function parseCodexCredential(raw) {
   }
 }
 
+function inferCodexCredentialMode(raw) {
+  const credential = parseCodexCredential(raw);
+  return credential.mode === 'oauth' ? 'oauth_json' : 'api_key';
+}
+
 const EditChannelModal = (props) => {
   const { t } = useTranslation();
   const channelId = props.editingChannel.id;
@@ -190,6 +194,7 @@ const EditChannelModal = (props) => {
     name: '',
     type: 1,
     key: '',
+    codex_credential_mode: 'api_key',
     openai_organization: '',
     max_input_tokens: 0,
     base_url: '',
@@ -379,6 +384,7 @@ const EditChannelModal = (props) => {
   }, [inputs.param_override, t]);
   const [isIonetChannel, setIsIonetChannel] = useState(false);
   const [ionetMetadata, setIonetMetadata] = useState(null);
+  const [codexCredentialMode, setCodexCredentialMode] = useState('api_key');
   const [codexOAuthModalVisible, setCodexOAuthModalVisible] = useState(false);
   const [codexCredentialRefreshing, setCodexCredentialRefreshing] =
     useState(false);
@@ -682,17 +688,29 @@ const EditChannelModal = (props) => {
 
       // 重置手动输入模式状态
       setUseManualInput(false);
+      if (value !== 57) {
+        setCodexCredentialMode('api_key');
+        if (formApiRef.current) {
+          formApiRef.current.setValue('codex_credential_mode', 'api_key');
+        }
+      }
 
       if (value === 57) {
+        setCodexCredentialMode('api_key');
         setBatch(false);
         setMultiToSingle(false);
         setMultiKeyMode('random');
         setVertexKeys([]);
         setVertexFileList([]);
         if (formApiRef.current) {
+          formApiRef.current.setValue('codex_credential_mode', 'api_key');
           formApiRef.current.setValue('vertex_files', []);
         }
-        setInputs((prev) => ({ ...prev, vertex_files: [] }));
+        setInputs((prev) => ({
+          ...prev,
+          codex_credential_mode: 'api_key',
+          vertex_files: [],
+        }));
       }
     }
     //setAutoBan
@@ -969,6 +987,16 @@ const EditChannelModal = (props) => {
           (typeof data.base_url === 'string' && data.base_url.trim() === ''))
       ) {
         data.base_url = 'https://ark.cn-beijing.volces.com';
+      }
+
+      const inferredCodexMode =
+        data.type === 57 ? inferCodexCredentialMode(data.key) : 'api_key';
+      data.codex_credential_mode = inferredCodexMode;
+      setCodexCredentialMode(inferredCodexMode);
+      if (data.type === 57 && inferredCodexMode === 'oauth_json') {
+        setBatch(false);
+        setMultiToSingle(false);
+        setMultiKeyMode('random');
       }
 
       setInputs(data);
@@ -1286,6 +1314,7 @@ const EditChannelModal = (props) => {
     fetchGroups().then();
     if (!isEdit) {
       setInputs(originInputs);
+      setCodexCredentialMode('api_key');
       if (formApiRef.current) {
         formApiRef.current.setValues(originInputs);
       }
@@ -1307,6 +1336,7 @@ const EditChannelModal = (props) => {
       if (isEdit) {
         loadChannel();
       } else {
+        setCodexCredentialMode('api_key');
         formApiRef.current?.setValues(getInitValues());
       }
       fetchModelGroups();
@@ -1364,6 +1394,7 @@ const EditChannelModal = (props) => {
     }
     // 重置本地输入，避免下次打开残留上一次的 JSON 字段值
     setInputs(getInitValues());
+    setCodexCredentialMode('api_key');
     // 重置密钥显示状态
     resetKeyDisplayState();
   };
@@ -1508,18 +1539,13 @@ const EditChannelModal = (props) => {
     localInputs.param_override = inputs.param_override;
 
     if (localInputs.type === 57) {
-      if (batch) {
-        showInfo(t('Codex 渠道不支持批量创建'));
-        return;
-      }
-
       const rawKey = (localInputs.key || '').trim();
       if (!isEdit && rawKey === '') {
         showInfo(t('请输入密钥！'));
         return;
       }
 
-      if (rawKey !== '') {
+      if (codexCredentialMode === 'oauth_json' && rawKey !== '') {
         const credential = parseCodexCredential(rawKey);
         if (credential.mode === 'invalid_json') {
           showInfo(t('密钥必须是合法的 JSON 格式，或直接填写普通 API Key'));
@@ -1805,6 +1831,7 @@ const EditChannelModal = (props) => {
     delete localInputs.upstream_model_update_last_check_time;
     delete localInputs.upstream_model_update_last_detected_models;
     delete localInputs.upstream_model_update_ignored_models;
+    delete localInputs.codex_credential_mode;
 
     let res;
     localInputs.auto_ban = localInputs.auto_ban ? 1 : 0;
@@ -1930,7 +1957,9 @@ const EditChannelModal = (props) => {
     }
   };
 
-  const batchAllowed = (!isEdit || isMultiKeyChannel) && inputs.type !== 57;
+  const isCodexOAuthMode =
+    inputs.type === 57 && codexCredentialMode === 'oauth_json';
+  const batchAllowed = (!isEdit || isMultiKeyChannel) && !isCodexOAuthMode;
   const batchExtra = batchAllowed ? (
     <Space>
       {!isEdit && (
@@ -2349,7 +2378,182 @@ const EditChannelModal = (props) => {
                         }
                       />
                     )}
-                    {batch ? (
+                    {inputs.type === 57 ? (
+                      <>
+                        <Form.Select
+                          field='codex_credential_mode'
+                          label={t('凭据模式')}
+                          placeholder={t('请选择凭据模式')}
+                          optionList={[
+                            { label: 'API Key', value: 'api_key' },
+                            { label: 'OAuth JSON', value: 'oauth_json' },
+                          ]}
+                          style={{ width: '100%' }}
+                          value={codexCredentialMode}
+                          onChange={(value) => {
+                            setCodexCredentialMode(value);
+                            handleInputChange('codex_credential_mode', value);
+                            if (value === 'oauth_json') {
+                              setBatch(false);
+                              setMultiToSingle(false);
+                              setMultiKeyMode('random');
+                            }
+                          }}
+                          extraText={
+                            codexCredentialMode === 'oauth_json'
+                              ? t('OAuth JSON 模式仅支持单渠道创建')
+                              : t('API Key 模式支持单个或多行密钥，可用于批量创建')
+                          }
+                        />
+
+                        {codexCredentialMode === 'oauth_json' ? (
+                          <>
+                            <Form.TextArea
+                              field='key'
+                              label={
+                                isEdit
+                                  ? t('密钥（编辑模式下，保存的密钥不会显示）')
+                                  : t('密钥')
+                              }
+                              placeholder={t(
+                                '请输入 JSON 格式 OAuth 凭据，例如：\n{\n  "access_token": "...",\n  "account_id": "..."\n}',
+                              )}
+                              rules={
+                                isEdit
+                                  ? []
+                                  : [
+                                      {
+                                        required: true,
+                                        message: t('请输入密钥'),
+                                      },
+                                    ]
+                              }
+                              autoComplete='new-password'
+                              onChange={(value) =>
+                                handleInputChange('key', value)
+                              }
+                              disabled={isIonetLocked}
+                              extraText={
+                                <div className='flex flex-col gap-2'>
+                                  <Text type='tertiary' size='small'>
+                                    {t(
+                                      'OAuth JSON 必须包含 access_token 与 account_id',
+                                    )}
+                                  </Text>
+                                  <Space wrap spacing='tight'>
+                                    <Button
+                                      size='small'
+                                      type='primary'
+                                      theme='outline'
+                                      onClick={() =>
+                                        setCodexOAuthModalVisible(true)
+                                      }
+                                      disabled={isIonetLocked}
+                                    >
+                                      {t('Codex 授权')}
+                                    </Button>
+                                    {isEdit &&
+                                      parseCodexCredential(inputs.key).mode ===
+                                        'oauth' && (
+                                        <Button
+                                          size='small'
+                                          type='primary'
+                                          theme='outline'
+                                          onClick={handleRefreshCodexCredential}
+                                          loading={codexCredentialRefreshing}
+                                          disabled={isIonetLocked}
+                                        >
+                                          {t('刷新凭证')}
+                                        </Button>
+                                      )}
+                                    <Button
+                                      size='small'
+                                      type='primary'
+                                      theme='outline'
+                                      onClick={() => formatJsonField('key')}
+                                      disabled={isIonetLocked}
+                                    >
+                                      {t('格式化')}
+                                    </Button>
+                                    {isEdit && (
+                                      <Button
+                                        size='small'
+                                        type='primary'
+                                        theme='outline'
+                                        onClick={handleShow2FAModal}
+                                        disabled={isIonetLocked}
+                                      >
+                                        {t('查看密钥')}
+                                      </Button>
+                                    )}
+                                  </Space>
+                                </div>
+                              }
+                              autosize
+                              showClear
+                            />
+
+                            <CodexOAuthModal
+                              visible={codexOAuthModalVisible}
+                              onCancel={() => setCodexOAuthModalVisible(false)}
+                              onSuccess={handleCodexOAuthGenerated}
+                            />
+                          </>
+                        ) : (
+                          <Form.TextArea
+                            field='key'
+                            label={
+                              isEdit
+                                ? t('密钥（编辑模式下，保存的密钥不会显示）')
+                                : t('密钥')
+                            }
+                            placeholder={t(
+                              '请输入 API Key；支持多行输入（每行一个）用于批量创建',
+                            )}
+                            rules={
+                              isEdit
+                                ? []
+                                : [{ required: true, message: t('请输入密钥') }]
+                            }
+                            autoComplete='new-password'
+                            onChange={(value) => handleInputChange('key', value)}
+                            disabled={isIonetLocked}
+                            extraText={
+                              <div className='flex flex-col gap-2'>
+                                <Text type='tertiary' size='small'>
+                                  {t('支持单个 API Key 或多行 API Key（每行一个）')}
+                                </Text>
+                                <div className='flex items-center gap-2 flex-wrap'>
+                                  {isEdit &&
+                                    isMultiKeyChannel &&
+                                    keyMode === 'append' && (
+                                      <Text type='warning' size='small'>
+                                        {t(
+                                          '追加模式：新密钥将添加到现有密钥列表的末尾',
+                                        )}
+                                      </Text>
+                                    )}
+                                  {isEdit && (
+                                    <Button
+                                      size='small'
+                                      type='primary'
+                                      theme='outline'
+                                      onClick={handleShow2FAModal}
+                                      disabled={isIonetLocked}
+                                    >
+                                      {t('查看密钥')}
+                                    </Button>
+                                  )}
+                                  {batchExtra}
+                                </div>
+                              </div>
+                            }
+                            autosize
+                            showClear
+                          />
+                        )}
+                      </>
+                    ) : batch ? (
                       inputs.type === 41 &&
                       (inputs.vertex_key_type || 'json') === 'json' ? (
                         <Form.Upload
@@ -2431,105 +2635,8 @@ const EditChannelModal = (props) => {
                       )
                     ) : (
                       <>
-                        {inputs.type === 57 ? (
-                          <>
-                            <Form.TextArea
-                              field='key'
-                              label={
-                                isEdit
-                                  ? t('密钥（编辑模式下，保存的密钥不会显示）')
-                                  : t('密钥')
-                              }
-                              placeholder={t(
-                                '请输入 Codex 凭据，支持两种格式：\n1. 普通 API Key\n2. JSON 格式 OAuth 凭据，例如：\n{\n  "access_token": "...",\n  "account_id": "..." \n}',
-                              )}
-                              rules={
-                                isEdit
-                                  ? []
-                                  : [
-                                      {
-                                        required: true,
-                                        message: t('请输入密钥'),
-                                      },
-                                    ]
-                              }
-                              autoComplete='new-password'
-                              onChange={(value) =>
-                                handleInputChange('key', value)
-                              }
-                              disabled={isIonetLocked}
-                              extraText={
-                                <div className='flex flex-col gap-2'>
-                                  <Text type='tertiary' size='small'>
-                                    {t(
-                                      '支持两种格式：普通 API Key；或 JSON 格式 OAuth 凭据（必须包含 access_token 与 account_id）',
-                                    )}
-                                  </Text>
-
-                                  <Space wrap spacing='tight'>
-                                    {parseCodexCredential(inputs.key).mode !== 'apikey' && (
-                                      <>
-                                        <Button
-                                          size='small'
-                                          type='primary'
-                                          theme='outline'
-                                          onClick={() =>
-                                            setCodexOAuthModalVisible(true)
-                                          }
-                                          disabled={isIonetLocked}
-                                        >
-                                          {t('Codex 授权')}
-                                        </Button>
-                                        {isEdit && parseCodexCredential(inputs.key).mode === 'oauth' && (
-                                          <Button
-                                            size='small'
-                                            type='primary'
-                                            theme='outline'
-                                            onClick={handleRefreshCodexCredential}
-                                            loading={codexCredentialRefreshing}
-                                            disabled={isIonetLocked}
-                                          >
-                                            {t('刷新凭证')}
-                                          </Button>
-                                        )}
-                                        <Button
-                                          size='small'
-                                          type='primary'
-                                          theme='outline'
-                                          onClick={() => formatJsonField('key')}
-                                          disabled={isIonetLocked}
-                                        >
-                                          {t('格式化')}
-                                        </Button>
-                                      </>
-                                    )}
-                                    {isEdit && (
-                                      <Button
-                                        size='small'
-                                        type='primary'
-                                        theme='outline'
-                                        onClick={handleShow2FAModal}
-                                        disabled={isIonetLocked}
-                                      >
-                                        {t('查看密钥')}
-                                      </Button>
-                                    )}
-                                    {batchExtra}
-                                  </Space>
-                                </div>
-                              }
-                              autosize
-                              showClear
-                            />
-
-                            <CodexOAuthModal
-                              visible={codexOAuthModalVisible}
-                              onCancel={() => setCodexOAuthModalVisible(false)}
-                              onSuccess={handleCodexOAuthGenerated}
-                            />
-                          </>
-                        ) : inputs.type === 41 &&
-                          (inputs.vertex_key_type || 'json') === 'json' ? (
+                        {inputs.type === 41 &&
+                        (inputs.vertex_key_type || 'json') === 'json' ? (
                           <>
                             {!batch && (
                               <div className='flex items-center justify-between mb-3'>
@@ -3001,6 +3108,25 @@ const EditChannelModal = (props) => {
                           )}
                           className='!rounded-lg'
                         />
+                      )}
+
+                      {inputs.type === 1 && (
+                        <>
+                          <Form.Switch
+                            field='skip_v1_in_responses_path'
+                            label={t('Responses 路径去掉 /v1 前缀')}
+                            checked={inputs.skip_v1_in_responses_path}
+                            onChange={(checked) =>
+                              handleChannelOtherSettingsChange(
+                                'skip_v1_in_responses_path',
+                                checked,
+                              )
+                            }
+                          />
+                          <Typography.Text type='tertiary'>
+                            {t('开启后，OpenAI 渠道的 /v1/responses 会转发为 /responses，用于兼容部分上游仅支持无 /v1 的 Responses 路径。')}
+                          </Typography.Text>
+                        </>
                       )}
 
                       {inputs.type !== 3 &&
