@@ -2,7 +2,6 @@ package model
 
 import (
 	"errors"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -256,37 +255,28 @@ func GetPDEPTokenAggregated(ownerID int, sourceID string, startUTC time.Time, en
 	startTs := startUTC.UTC().Unix()
 	endTs := endUTC.UTC().Unix()
 
-	var logs []Log
-	err = LOG_DB.Select("created_at,quota").
+	type aggregatedRow struct {
+		BucketTS int64 `gorm:"column:bucket_ts"`
+		Usage    int   `gorm:"column:usage"`
+	}
+	var rows []aggregatedRow
+	err = LOG_DB.Model(&Log{}).
+		Select("((created_at / 600) * 600) AS bucket_ts, COALESCE(SUM(quota), 0) AS usage").
 		Where("type = ? AND token_id = ? AND created_at >= ? AND created_at < ?", LogTypeConsume, tokenID, startTs, endTs).
-		Order("created_at asc").
-		Find(&logs).Error
+		Group("((created_at / 600) * 600)").
+		Order("bucket_ts asc").
+		Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
 
-	usageByBucket := make(map[int64]int)
-	for i := range logs {
-		bucketTS := (logs[i].CreatedAt / 600) * 600
-		usageByBucket[bucketTS] += logs[i].Quota
-	}
-
-	bucketTimestamps := make([]int64, 0, len(usageByBucket))
-	for ts := range usageByBucket {
-		bucketTimestamps = append(bucketTimestamps, ts)
-	}
-	sort.Slice(bucketTimestamps, func(i, j int) bool {
-		return bucketTimestamps[i] < bucketTimestamps[j]
-	})
-
-	buckets := make([]PDEPAggregatedBucket, 0, len(bucketTimestamps))
-	for _, ts := range bucketTimestamps {
-		usage := usageByBucket[ts]
+	buckets := make([]PDEPAggregatedBucket, 0, len(rows))
+	for i := range rows {
 		buckets = append(buckets, PDEPAggregatedBucket{
-			Timestamp: toRFC3339UTC(ts),
-			Usage:     usage,
+			Timestamp: toRFC3339UTC(rows[i].BucketTS),
+			Usage:     rows[i].Usage,
 			Refill:    0,
-			Net:       usage,
+			Net:       rows[i].Usage,
 		})
 	}
 	return buckets, nil

@@ -124,6 +124,12 @@ func PDEPProviderGetAggregatedTokens(c *gin.Context) {
 		})
 		return
 	}
+	if !isAlignedPDEPTenMinuteUTC(startUTC) || !isAlignedPDEPTenMinuteUTC(endUTC) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid time range",
+		})
+		return
+	}
 
 	ownerID := c.GetInt("id")
 	buckets, err := model.GetPDEPTokenAggregated(ownerID, sourceID, startUTC, endUTC)
@@ -153,12 +159,21 @@ func PDEPProviderGetAggregatedTokens(c *gin.Context) {
 
 func parsePDEPQueryUTC(raw string) (time.Time, error) {
 	value := strings.TrimSpace(raw)
-	if value == "" || !strings.HasSuffix(value, "Z") {
+	if value == "" {
 		return time.Time{}, errors.New("invalid utc timestamp")
 	}
 	parsed, err := time.Parse(time.RFC3339, value)
 	if err != nil {
 		return time.Time{}, err
 	}
+	_, offset := parsed.Zone()
+	if offset != 0 {
+		return time.Time{}, errors.New("invalid utc timestamp")
+	}
 	return parsed.UTC(), nil
+}
+
+func isAlignedPDEPTenMinuteUTC(ts time.Time) bool {
+	utc := ts.UTC()
+	return utc.Minute()%10 == 0 && utc.Second() == 0 && utc.Nanosecond() == 0
 }

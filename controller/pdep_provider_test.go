@@ -479,6 +479,73 @@ func TestPDEPGetTokenAggregated_RejectsInvalidTimeRange(t *testing.T) {
 	}
 }
 
+func TestPDEPGetTokenAggregated_RejectsUnalignedTimeRange(t *testing.T) {
+	db := setupPDEPProviderControllerTestDB(t)
+	seedPDEPProviderOwnerUser(t, db, 6151, common.UserStatusEnabled)
+	token := seedPDEPProviderToken(t, db, 6151, "owner", "abcd1234owner61510000000000000000000000000000", 1710752400)
+	t.Setenv("PDEP_PROVIDER_SECRET", "test-secret")
+	t.Setenv("PDEP_PROVIDER_OWNER_USER_ID", "6151")
+
+	engine := newPDEPProviderTestRouter()
+	start := "2026-03-19T00:05:00Z"
+	end := "2026-03-19T00:15:00Z"
+	path := fmt.Sprintf("/api/pdep/v1/tokens/aggregated?sourceId=token-%d&startTime=%s&endTime=%s", token.Id, url.QueryEscape(start), url.QueryEscape(end))
+	recorder := doPDEPProviderRequest(t, engine, http.MethodGet, path, nil, "test-secret")
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unaligned time range, got %d", recorder.Code)
+	}
+
+	var response pdepErrorResponse
+	if err := common.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if response.Message != "invalid time range" {
+		t.Fatalf("expected message invalid time range, got %s", response.Message)
+	}
+}
+
+func TestPDEPGetTokenAggregated_AcceptsUTCPlusZeroOffset(t *testing.T) {
+	db := setupPDEPProviderControllerTestDB(t)
+	seedPDEPProviderOwnerUser(t, db, 6171, common.UserStatusEnabled)
+	token := seedPDEPProviderToken(t, db, 6171, "owner", "abcd1234owner61710000000000000000000000000000", 1710752400)
+	t.Setenv("PDEP_PROVIDER_SECRET", "test-secret")
+	t.Setenv("PDEP_PROVIDER_OWNER_USER_ID", "6171")
+
+	engine := newPDEPProviderTestRouter()
+	start := "2026-03-19T00:00:00+00:00"
+	end := "2026-03-19T00:10:00+00:00"
+	path := fmt.Sprintf("/api/pdep/v1/tokens/aggregated?sourceId=token-%d&startTime=%s&endTime=%s", token.Id, url.QueryEscape(start), url.QueryEscape(end))
+	recorder := doPDEPProviderRequest(t, engine, http.MethodGet, path, nil, "test-secret")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200 for utc +00:00, got %d", recorder.Code)
+	}
+}
+
+func TestPDEPGetTokenAggregated_RejectsNonUTCOffset(t *testing.T) {
+	db := setupPDEPProviderControllerTestDB(t)
+	seedPDEPProviderOwnerUser(t, db, 6181, common.UserStatusEnabled)
+	token := seedPDEPProviderToken(t, db, 6181, "owner", "abcd1234owner61810000000000000000000000000000", 1710752400)
+	t.Setenv("PDEP_PROVIDER_SECRET", "test-secret")
+	t.Setenv("PDEP_PROVIDER_OWNER_USER_ID", "6181")
+
+	engine := newPDEPProviderTestRouter()
+	start := "2026-03-19T08:00:00+08:00"
+	end := "2026-03-19T08:10:00+08:00"
+	path := fmt.Sprintf("/api/pdep/v1/tokens/aggregated?sourceId=token-%d&startTime=%s&endTime=%s", token.Id, url.QueryEscape(start), url.QueryEscape(end))
+	recorder := doPDEPProviderRequest(t, engine, http.MethodGet, path, nil, "test-secret")
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for non-utc offset, got %d", recorder.Code)
+	}
+
+	var response pdepErrorResponse
+	if err := common.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if response.Message != "invalid time range" {
+		t.Fatalf("expected message invalid time range, got %s", response.Message)
+	}
+}
+
 func TestPDEPGetTokenAggregated_RejectsNonOwnerTokenWith403(t *testing.T) {
 	db := setupPDEPProviderControllerTestDB(t)
 	seedPDEPProviderOwnerUser(t, db, 6201, common.UserStatusEnabled)
