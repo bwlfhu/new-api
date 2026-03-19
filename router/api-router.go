@@ -46,6 +46,15 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/oauth/:provider", middleware.CriticalRateLimit(), controller.HandleOAuth)
 		apiRouter.GET("/ratio_config", middleware.CriticalRateLimit(), controller.GetRatioConfig)
 
+		pdepProviderRoute := apiRouter.Group("/pdep/v1")
+		pdepProviderRoute.Use(middleware.PDEPProviderAuth())
+		{
+			pdepProviderRoute.GET("/tokens", controller.PDEPProviderGetTokens)
+			pdepProviderRoute.POST("/tokens", controller.PDEPProviderCreateToken)
+			pdepProviderRoute.DELETE("/tokens/:id", controller.PDEPProviderDeleteToken)
+			pdepProviderRoute.GET("/tokens/aggregated", controller.PDEPProviderGetAggregatedTokens)
+		}
+
 		apiRouter.POST("/stripe/webhook", controller.StripeWebhook)
 		apiRouter.POST("/creem/webhook", controller.CreemWebhook)
 		apiRouter.POST("/waffo/webhook", controller.WaffoWebhook)

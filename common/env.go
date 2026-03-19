@@ -4,6 +4,12 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
+)
+
+const (
+	PDEP_PROVIDER_SECRET        = "PDEP_PROVIDER_SECRET"
+	PDEP_PROVIDER_OWNER_USER_ID = "PDEP_PROVIDER_OWNER_USER_ID"
 )
 
 func GetEnvOrDefault(env string, defaultValue int) int {
@@ -35,4 +41,12 @@ func GetEnvOrDefaultBool(env string, defaultValue bool) bool {
 		return defaultValue
 	}
 	return b
+}
+
+func GetPDEPProviderSecret() string {
+	return strings.TrimSpace(GetEnvOrDefaultString(PDEP_PROVIDER_SECRET, ""))
+}
+
+func GetPDEPProviderOwnerUserID() int {
+	return GetEnvOrDefault(PDEP_PROVIDER_OWNER_USER_ID, 0)
 }
