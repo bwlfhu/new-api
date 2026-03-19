@@ -4,6 +4,31 @@
 
 This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI providers (OpenAI, Claude, Gemini, Azure, AWS Bedrock, etc.) behind a unified API, with user management, billing, rate limiting, and an admin dashboard.
 
+## Fork Maintenance Context
+
+- This repository is a long-term maintained fork, not a throwaway patch branch.
+- As of 2026-03-19, the local git remote mapping is:
+  - `origin` — upstream mainline repository (`QuantumNous/new-api`)
+  - `fork` — personal fork repository (`bwlfhu/new-api`)
+- If remote names change later, preserve the same responsibility split:
+  - upstream mainline is the source for latest official changes
+  - personal fork is the default push target for custom maintenance work
+- Before any sync, merge, or rebase:
+  - inspect `git status --short`
+  - avoid overwriting user changes or unrelated local modifications
+  - fetch both remotes first, then decide whether to merge or rebase
+- Prefer this maintenance sequence:
+  1. `git fetch origin fork --prune`
+  2. sync local base branch from upstream mainline
+  3. branch or rebase feature work on top of the updated upstream base
+  4. push maintenance branches to the personal fork
+- Do not use destructive git operations such as `reset --hard` or forced history rewrites unless the user explicitly requires them.
+- Current fork maintenance notes recorded on 2026-03-19:
+  - primary long-term maintenance branch: `maint/mainline`
+  - this fork already added Codex API key / API mode support
+  - this fork already added OpenAI channel URL handling that supports removing `/v1` from the upstream base URL
+  - fork-specific relay changes were first developed on `feat/codex-apikey-support` and then merged into `maint/mainline`
+
 ## Tech Stack
 
 - **Backend**: Go 1.22+, Gin web framework, GORM v2 ORM
@@ -18,24 +43,48 @@ This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI pro
 Layered architecture: Router -> Controller -> Service -> Model
 
 ```
-router/        — HTTP routing (API, relay, dashboard, web)
-controller/    — Request handlers
-service/       — Business logic
-model/         — Data models and DB access (GORM)
-relay/         — AI API relay/proxy with provider adapters
-  relay/channel/ — Provider-specific adapters (openai/, claude/, gemini/, aws/, etc.)
-middleware/    — Auth, rate limiting, CORS, logging, distribution
-setting/       — Configuration management (ratio, model, operation, system, performance)
-common/        — Shared utilities (JSON, crypto, Redis, env, rate-limit, etc.)
-dto/           — Data transfer objects (request/response structs)
-constant/      — Constants (API types, channel types, context keys)
-types/         — Type definitions (relay formats, file sources, errors)
-i18n/          — Backend internationalization (go-i18n, en/zh)
-oauth/         — OAuth provider implementations
-pkg/           — Internal packages (cachex, ionet)
-web/           — React frontend
-  web/src/i18n/  — Frontend internationalization (i18next, zh/en/fr/ru/ja/vi)
+main.go                        — Backend entrypoint
+router/                        — HTTP route registration and route grouping
+controller/                    — Request handlers for admin, user, relay, billing, oauth, setup
+service/                       — Business orchestration and domain services
+model/                         — GORM models, queries, cache helpers, DB compatibility logic
+relay/                         — Upstream relay core, mode handlers, provider conversion, streaming
+relay/channel/                 — Provider/channel adapters and request builders
+relay/common/                  — Shared relay billing, relay info, request conversion, overrides
+relay/common_handler/          — Shared handlers for special relay modes
+middleware/                    — Auth, rate limit, stats, i18n, distributor, logging, recovery
+setting/                       — Runtime settings and grouped config modules
+setting/*_setting/             — Structured config domains such as system, model, ratio, operation
+common/                        — Shared utilities: JSON, env, crypto, Redis, SSRF, rate limit, cache
+dto/                           — Upstream/downstream request/response DTOs
+constant/                      — API, channel, cache, env, task, context constants
+types/                         — Shared type definitions and error contracts
+i18n/                          — Backend i18n resources and locale bundles
+oauth/                         — OAuth provider registry and implementations
+pkg/cachex/                    — Hybrid cache utilities
+pkg/ionet/                     — io.net integration client and DTOs
+logger/                        — Logger bootstrap and shared logging helpers
+docs/                          — Project docs, installation docs, OpenAPI docs, channel docs
+electron/                      — Electron desktop wrapper and tray integration assets
+bin/                           — Build/runtime helper assets
+web/                           — Frontend app
+web/public/                    — Static frontend assets
+web/src/components/            — Reusable React UI components
+web/src/pages/                 — Route-level pages
+web/src/hooks/                 — Feature hooks and data fetching hooks
+web/src/services/              — Frontend API request wrappers
+web/src/context/               — Global status/theme/user context
+web/src/i18n/                  — Frontend i18n bootstrap and locale files
 ```
+
+## Project Structure Notes
+
+- Backend request path normally follows `router -> controller -> service -> model`, while relay traffic may additionally enter `relay/*` after controller-level validation.
+- `controller/relay.go`, `router/relay-router.go`, `relay/*`, `dto/*`, and `model/channel.go` form the main relay change surface for upstream protocol adaptation.
+- Channel management UI is mainly under `web/src/pages/Channel` and `web/src/components/table/channels`.
+- Settings-related backend changes usually span `controller/option.go`, `model/option.go`, and `setting/*`.
+- OAuth and passkey related work is split across `controller/*oauth*`, `controller/passkey.go`, `oauth/*`, `service/passkey`, and corresponding frontend auth components.
+- Documentation is not yet fully initialized into a complete architecture-doc set under `docs/architecture/`; if later needed, continue initialization there instead of scattering design notes into random files.
 
 ## Internationalization (i18n)
 
@@ -50,6 +99,25 @@ web/           — React frontend
 - Usage: `useTranslation()` hook, call `t('中文key')` in components
 - Semi UI locale synced via `SemiLocaleWrapper`
 - CLI tools: `bun run i18n:extract`, `bun run i18n:sync`, `bun run i18n:lint`
+
+## Maintenance Workflow
+
+- This fork will continue to receive both upstream sync work and custom bug fixes.
+- When handling future issues, first decide which category the change belongs to:
+  - upstream sync from official mainline
+  - fork-only compatibility fix
+  - new upstream/channel capability support
+  - UI or admin-console maintenance
+- For upstream sync work:
+  - compare local fork changes against upstream first
+  - pay special attention to relay DTOs, channel config forms, and setting persistence to avoid silent regressions
+  - re-check any previously customized Codex or OpenAI channel logic after sync
+- For channel-related changes:
+  - verify backend relay logic and frontend channel-edit form together
+  - if a provider supports both legacy and non-legacy URL conventions, keep backward compatibility unless the user explicitly wants a breaking cleanup
+- For bug fixes:
+  - prefer adding or updating focused tests near DTO conversion, controller logic, or relay helpers when the touched area already has test coverage
+  - record any fork-specific behavior in this file or adjacent docs if it will affect future upstream sync decisions
 
 ## Rules
 
