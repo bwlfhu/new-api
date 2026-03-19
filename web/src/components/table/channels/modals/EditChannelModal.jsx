@@ -149,9 +149,31 @@ function type2secretPrompt(type) {
     case 51:
       return '按照如下格式输入: AccessKey|SecretAccessKey';
     case 57:
-      return '请输入 JSON 格式的 OAuth 凭据（必须包含 access_token 和 account_id）';
+      return '请输入 Codex 凭据：支持普通 API Key，或 JSON 格式 OAuth 凭据（必须包含 access_token 和 account_id）';
     default:
       return '请输入渠道对应的鉴权密钥';
+  }
+}
+
+
+function parseCodexCredential(raw) {
+  const value = (raw || '').trim();
+  if (value === '') return { mode: 'empty' };
+  if (!value.startsWith('{')) return { mode: 'apikey', value };
+  if (!verifyJSON(value)) return { mode: 'invalid_json' };
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { mode: 'invalid_json_object' };
+    }
+    const accessToken = String(parsed.access_token || '').trim();
+    const accountId = String(parsed.account_id || '').trim();
+    if (!accessToken || !accountId) {
+      return { mode: 'invalid_oauth_fields', parsed };
+    }
+    return { mode: 'oauth', parsed };
+  } catch {
+    return { mode: 'invalid_json' };
   }
 }
 
@@ -882,6 +904,8 @@ const EditChannelModal = (props) => {
             parsedSettings.allow_safety_identifier || false;
           data.allow_include_obfuscation =
             parsedSettings.allow_include_obfuscation || false;
+          data.skip_v1_in_responses_path =
+            parsedSettings.skip_v1_in_responses_path || false;
           data.allow_inference_geo =
             parsedSettings.allow_inference_geo || false;
           data.claude_beta_query = parsedSettings.claude_beta_query || false;
@@ -912,6 +936,7 @@ const EditChannelModal = (props) => {
           data.disable_store = false;
           data.allow_safety_identifier = false;
           data.allow_include_obfuscation = false;
+          data.skip_v1_in_responses_path = false;
           data.allow_inference_geo = false;
           data.claude_beta_query = false;
           data.upstream_model_update_check_enabled = false;
@@ -1495,30 +1520,21 @@ const EditChannelModal = (props) => {
       }
 
       if (rawKey !== '') {
-        if (!verifyJSON(rawKey)) {
-          showInfo(t('密钥必须是合法的 JSON 格式！'));
+        const credential = parseCodexCredential(rawKey);
+        if (credential.mode === 'invalid_json') {
+          showInfo(t('密钥必须是合法的 JSON 格式，或直接填写普通 API Key'));
           return;
         }
-        try {
-          const parsed = JSON.parse(rawKey);
-          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-            showInfo(t('密钥必须是 JSON 对象'));
-            return;
-          }
-          const accessToken = String(parsed.access_token || '').trim();
-          const accountId = String(parsed.account_id || '').trim();
-          if (!accessToken) {
-            showInfo(t('密钥 JSON 必须包含 access_token'));
-            return;
-          }
-          if (!accountId) {
-            showInfo(t('密钥 JSON 必须包含 account_id'));
-            return;
-          }
-          localInputs.key = JSON.stringify(parsed);
-        } catch (error) {
-          showInfo(t('密钥必须是合法的 JSON 格式！'));
+        if (credential.mode === 'invalid_json_object') {
+          showInfo(t('密钥必须是 JSON 对象'));
           return;
+        }
+        if (credential.mode === 'invalid_oauth_fields') {
+          showInfo(t('OAuth 密钥 JSON 必须包含 access_token 和 account_id；如果使用普通 API Key，请直接填写字符串'));
+          return;
+        }
+        if (credential.mode === 'oauth') {
+          localInputs.key = JSON.stringify(credential.parsed);
         }
       }
     }
@@ -1731,6 +1747,8 @@ const EditChannelModal = (props) => {
           localInputs.allow_safety_identifier === true;
         settings.allow_include_obfuscation =
           localInputs.allow_include_obfuscation === true;
+        settings.skip_v1_in_responses_path =
+          localInputs.skip_v1_in_responses_path === true;
       }
       if (localInputs.type === 14) {
         settings.allow_inference_geo = localInputs.allow_inference_geo === true;
@@ -2423,7 +2441,7 @@ const EditChannelModal = (props) => {
                                   : t('密钥')
                               }
                               placeholder={t(
-                                '请输入 JSON 格式的 OAuth 凭据，例如：\n{\n  "access_token": "...",\n  "account_id": "..." \n}',
+                                '请输入 Codex 凭据，支持两种格式：\n1. 普通 API Key\n2. JSON 格式 OAuth 凭据，例如：\n{\n  "access_token": "...",\n  "account_id": "..." \n}',
                               )}
                               rules={
                                 isEdit
@@ -2444,43 +2462,47 @@ const EditChannelModal = (props) => {
                                 <div className='flex flex-col gap-2'>
                                   <Text type='tertiary' size='small'>
                                     {t(
-                                      '仅支持 JSON 对象，必须包含 access_token 与 account_id',
+                                      '支持两种格式：普通 API Key；或 JSON 格式 OAuth 凭据（必须包含 access_token 与 account_id）',
                                     )}
                                   </Text>
 
                                   <Space wrap spacing='tight'>
-                                    <Button
-                                      size='small'
-                                      type='primary'
-                                      theme='outline'
-                                      onClick={() =>
-                                        setCodexOAuthModalVisible(true)
-                                      }
-                                      disabled={isIonetLocked}
-                                    >
-                                      {t('Codex 授权')}
-                                    </Button>
-                                    {isEdit && (
-                                      <Button
-                                        size='small'
-                                        type='primary'
-                                        theme='outline'
-                                        onClick={handleRefreshCodexCredential}
-                                        loading={codexCredentialRefreshing}
-                                        disabled={isIonetLocked}
-                                      >
-                                        {t('刷新凭证')}
-                                      </Button>
+                                    {parseCodexCredential(inputs.key).mode !== 'apikey' && (
+                                      <>
+                                        <Button
+                                          size='small'
+                                          type='primary'
+                                          theme='outline'
+                                          onClick={() =>
+                                            setCodexOAuthModalVisible(true)
+                                          }
+                                          disabled={isIonetLocked}
+                                        >
+                                          {t('Codex 授权')}
+                                        </Button>
+                                        {isEdit && parseCodexCredential(inputs.key).mode === 'oauth' && (
+                                          <Button
+                                            size='small'
+                                            type='primary'
+                                            theme='outline'
+                                            onClick={handleRefreshCodexCredential}
+                                            loading={codexCredentialRefreshing}
+                                            disabled={isIonetLocked}
+                                          >
+                                            {t('刷新凭证')}
+                                          </Button>
+                                        )}
+                                        <Button
+                                          size='small'
+                                          type='primary'
+                                          theme='outline'
+                                          onClick={() => formatJsonField('key')}
+                                          disabled={isIonetLocked}
+                                        >
+                                          {t('格式化')}
+                                        </Button>
+                                      </>
                                     )}
-                                    <Button
-                                      size='small'
-                                      type='primary'
-                                      theme='outline'
-                                      onClick={() => formatJsonField('key')}
-                                      disabled={isIonetLocked}
-                                    >
-                                      {t('格式化')}
-                                    </Button>
                                     {isEdit && (
                                       <Button
                                         size='small'

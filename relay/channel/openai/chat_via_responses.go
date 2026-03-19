@@ -100,11 +100,15 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	responseId := helper.GetResponseID(c)
 	createAt := time.Now().Unix()
 	model := info.UpstreamModelName
+	requestID := c.GetString(common.RequestIdKey)
+	logger.LogInfo(c, fmt.Sprintf("responses->chat stream begin: request_id=%s model=%s channel_id=%d channel_type=%d is_stream=%v relay_format=%s", requestID, info.UpstreamModelName, info.ChannelId, info.ChannelType, info.IsStream, info.RelayFormat))
 
 	var (
 		usage       = &dto.Usage{}
 		outputText  strings.Builder
 		usageText   strings.Builder
+		streamed    bool
+		sawCompleted bool
 		sentStart   bool
 		sentStop    bool
 		sawToolCall bool
@@ -133,6 +137,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 				streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 				return false
 			}
+			streamed = streamed || c.Writer.Written()
 			return true
 		}
 
@@ -434,6 +439,8 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		case "response.function_call_arguments.done":
 
 		case "response.completed":
+			sawCompleted = true
+			logger.LogInfo(c, fmt.Sprintf("responses->chat stream completed: request_id=%s", requestID))
 			if streamResp.Response != nil {
 				if streamResp.Response.Model != "" {
 					model = streamResp.Response.Model
@@ -485,13 +492,20 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			}
 
 		case "response.error", "response.failed":
+			streamHasStarted := streamed || c.Writer.Written()
+			logger.LogInfo(c, fmt.Sprintf("responses->chat stream event-error: request_id=%s type=%s stream_started=%v writer_written=%v sent_start=%v sent_stop=%v", requestID, streamResp.Type, streamHasStarted, c.Writer.Written(), sentStart, sentStop))
+			var eventErr *types.NewAPIError
 			if streamResp.Response != nil {
 				if oaiErr := streamResp.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
-					streamErr = types.WithOpenAIError(*oaiErr, http.StatusInternalServerError)
-					return false
+					eventErr = types.WithOpenAIError(*oaiErr, http.StatusInternalServerError)
 				}
 			}
-			streamErr = types.NewOpenAIError(fmt.Errorf("responses stream error: %s", streamResp.Type), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			if eventErr == nil {
+				eventErr = types.NewOpenAIError(fmt.Errorf("responses stream error: %s", streamResp.Type), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			}
+			if !streamHasStarted {
+				streamErr = eventErr
+			}
 			return false
 
 		default:
@@ -501,6 +515,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	})
 
 	if streamErr != nil {
+		logger.LogInfo(c, fmt.Sprintf("responses->chat stream return-error: request_id=%s wrote_any=%v saw_completed=%v sent_start=%v sent_stop=%v err=%s", requestID, streamed || c.Writer.Written(), sawCompleted, sentStart, sentStop, streamErr.Error()))
 		return nil, streamErr
 	}
 
@@ -535,5 +550,6 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	if info.RelayFormat == types.RelayFormatOpenAI {
 		helper.Done(c)
 	}
+	logger.LogInfo(c, fmt.Sprintf("responses->chat stream end: request_id=%s wrote_any=%v saw_completed=%v sent_start=%v sent_stop=%v usage_total=%d", requestID, streamed || c.Writer.Written(), sawCompleted, sentStart, sentStop, usage.TotalTokens))
 	return usage, nil
 }

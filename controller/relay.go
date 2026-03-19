@@ -67,6 +67,7 @@ func geminiRelayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewA
 func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	requestId := c.GetString(common.RequestIdKey)
+	logger.LogInfo(c, fmt.Sprintf("relay request begin: request_id=%s path=%s method=%s relay_format=%s", requestId, c.Request.URL.Path, c.Request.Method, relayFormat))
 	//group := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 	//originalModel := common.GetContextKeyString(c, constant.ContextKeyOriginalModel)
 
@@ -148,6 +149,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 
 	relayInfo.SetEstimatePromptTokens(tokens)
+	logger.LogInfo(c, fmt.Sprintf("relay request ready: request_id=%s path=%s model=%s relay_mode=%d estimate_prompt_tokens=%d", requestId, c.Request.URL.Path, relayInfo.OriginModelName, relayInfo.RelayMode, tokens))
 
 	priceData, err := helper.ModelPriceHelper(c, relayInfo, tokens, meta)
 	if err != nil {
@@ -528,7 +530,7 @@ func RelayTask(c *gin.Context) {
 			}
 		}
 
-		addUsedChannel(c, channel.Id)
+				addUsedChannel(c, channel.Id)
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
 		if bodyErr != nil {
 			if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
