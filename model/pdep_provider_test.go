@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/glebarez/sqlite"
@@ -179,6 +180,68 @@ func TestPDEPProvider_DeleteToken_RejectsNonOwnerToken(t *testing.T) {
 	otherOwnerToken := seedPDEPProviderToken(t, db, 4002, "other-owner-token", "abcd1234owner40020000000000000000000000000000")
 
 	err := DeletePDEPToken(4001, otherOwnerToken.Id)
+	if !errors.Is(err, ErrPDEPForbiddenToken) {
+		t.Fatalf("expected ErrPDEPForbiddenToken, got %v", err)
+	}
+}
+
+func TestPDEPProvider_GetAggregated_BucketsByTenMinutes(t *testing.T) {
+	db := setupPDEPProviderModelTestDB(t)
+	ownerToken := seedPDEPProviderToken(t, db, 5101, "owner-token", "abcd1234owner51010000000000000000000000000000")
+
+	start := time.Date(2026, 3, 19, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 3, 19, 0, 30, 0, 0, time.UTC)
+
+	logs := []Log{
+		{UserId: 5101, TokenId: ownerToken.Id, Type: LogTypeConsume, Quota: 100, CreatedAt: start.Add(80 * time.Second).Unix()},
+		{UserId: 5101, TokenId: ownerToken.Id, Type: LogTypeConsume, Quota: 20, CreatedAt: start.Add(599 * time.Second).Unix()},
+		{UserId: 5101, TokenId: ownerToken.Id, Type: LogTypeConsume, Quota: 30, CreatedAt: start.Add(600 * time.Second).Unix()},
+		{UserId: 5101, TokenId: ownerToken.Id, Type: LogTypeConsume, Quota: 50, CreatedAt: start.Add(1199 * time.Second).Unix()},
+		{UserId: 5101, TokenId: ownerToken.Id, Type: LogTypeManage, Quota: 999, CreatedAt: start.Add(610 * time.Second).Unix()},
+		{UserId: 5101, TokenId: ownerToken.Id, Type: LogTypeConsume, Quota: 777, CreatedAt: end.Unix()},
+		{UserId: 5101, TokenId: ownerToken.Id, Type: LogTypeConsume, Quota: 666, CreatedAt: start.Add(-1 * time.Second).Unix()},
+	}
+	for _, item := range logs {
+		entry := item
+		if err := db.Create(&entry).Error; err != nil {
+			t.Fatalf("failed to seed log: %v", err)
+		}
+	}
+
+	buckets, err := GetPDEPTokenAggregated(5101, fmt.Sprintf("token-%d", ownerToken.Id), start, end)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("expected 2 buckets, got %d", len(buckets))
+	}
+
+	if buckets[0].Timestamp != "2026-03-19T00:00:00Z" || buckets[0].Usage != 120 || buckets[0].Refill != 0 || buckets[0].Net != 120 {
+		t.Fatalf("unexpected first bucket: %+v", buckets[0])
+	}
+	if buckets[1].Timestamp != "2026-03-19T00:10:00Z" || buckets[1].Usage != 80 || buckets[1].Refill != 0 || buckets[1].Net != 80 {
+		t.Fatalf("unexpected second bucket: %+v", buckets[1])
+	}
+}
+
+func TestPDEPProvider_GetAggregated_RejectsInvalidSourceID(t *testing.T) {
+	_ = setupPDEPProviderModelTestDB(t)
+	start := time.Date(2026, 3, 19, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+
+	_, err := GetPDEPTokenAggregated(5201, "invalid-source-id", start, end)
+	if !errors.Is(err, ErrPDEPInvalidSourceID) {
+		t.Fatalf("expected ErrPDEPInvalidSourceID, got %v", err)
+	}
+}
+
+func TestPDEPProvider_GetAggregated_RejectsTokenOutsideOwner(t *testing.T) {
+	db := setupPDEPProviderModelTestDB(t)
+	otherOwnerToken := seedPDEPProviderToken(t, db, 5302, "other-owner-token", "abcd1234owner53020000000000000000000000000000")
+	start := time.Date(2026, 3, 19, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+
+	_, err := GetPDEPTokenAggregated(5301, fmt.Sprintf("token-%d", otherOwnerToken.Id), start, end)
 	if !errors.Is(err, ErrPDEPForbiddenToken) {
 		t.Fatalf("expected ErrPDEPForbiddenToken, got %v", err)
 	}

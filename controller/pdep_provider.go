@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
@@ -95,5 +96,69 @@ func PDEPProviderDeleteToken(c *gin.Context) {
 }
 
 func PDEPProviderGetAggregatedTokens(c *gin.Context) {
-	pdepProviderNotImplemented(c)
+	sourceID := c.Query("sourceId")
+	if sourceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid sourceId",
+		})
+		return
+	}
+
+	startUTC, err := parsePDEPQueryUTC(c.Query("startTime"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid time range",
+		})
+		return
+	}
+	endUTC, err := parsePDEPQueryUTC(c.Query("endTime"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid time range",
+		})
+		return
+	}
+	if !startUTC.Before(endUTC) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid time range",
+		})
+		return
+	}
+
+	ownerID := c.GetInt("id")
+	buckets, err := model.GetPDEPTokenAggregated(ownerID, sourceID, startUTC, endUTC)
+	if errors.Is(err, model.ErrPDEPInvalidSourceID) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "invalid sourceId",
+		})
+		return
+	}
+	if errors.Is(err, model.ErrPDEPForbiddenToken) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"message": "forbidden",
+		})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "internal error",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"buckets": buckets,
+	})
+}
+
+func parsePDEPQueryUTC(raw string) (time.Time, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" || !strings.HasSuffix(value, "Z") {
+		return time.Time{}, errors.New("invalid utc timestamp")
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return parsed.UTC(), nil
 }

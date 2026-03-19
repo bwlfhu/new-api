@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +42,15 @@ type pdepCreateResponse struct {
 
 type pdepErrorResponse struct {
 	Message string `json:"message"`
+}
+
+type pdepAggregatedResponse struct {
+	Buckets []struct {
+		Timestamp string `json:"timestamp"`
+		Usage     int    `json:"usage"`
+		Refill    int    `json:"refill"`
+		Net       int    `json:"net"`
+	} `json:"buckets"`
 }
 
 func setupPDEPProviderControllerTestDB(t *testing.T) *gorm.DB {
@@ -253,7 +263,7 @@ func TestPDEPProviderRoutes_ValidAuth_ReachesController(t *testing.T) {
 			name:       "get-aggregated-tokens",
 			method:     http.MethodGet,
 			path:       "/api/pdep/v1/tokens/aggregated",
-			statusCode: http.StatusNotImplemented,
+			statusCode: http.StatusBadRequest,
 		},
 	}
 
@@ -441,5 +451,104 @@ func TestPDEPDeleteToken_RejectsNonOwnerToken(t *testing.T) {
 	}
 	if response.Message != "forbidden" {
 		t.Fatalf("expected message forbidden, got %s", response.Message)
+	}
+}
+
+func TestPDEPGetTokenAggregated_RejectsInvalidTimeRange(t *testing.T) {
+	db := setupPDEPProviderControllerTestDB(t)
+	seedPDEPProviderOwnerUser(t, db, 6101, common.UserStatusEnabled)
+	token := seedPDEPProviderToken(t, db, 6101, "owner", "abcd1234owner61010000000000000000000000000000", 1710752400)
+	t.Setenv("PDEP_PROVIDER_SECRET", "test-secret")
+	t.Setenv("PDEP_PROVIDER_OWNER_USER_ID", "6101")
+
+	engine := newPDEPProviderTestRouter()
+	start := "2026-03-19T01:00:00Z"
+	end := "2026-03-19T01:00:00Z"
+	path := fmt.Sprintf("/api/pdep/v1/tokens/aggregated?sourceId=token-%d&startTime=%s&endTime=%s", token.Id, url.QueryEscape(start), url.QueryEscape(end))
+	recorder := doPDEPProviderRequest(t, engine, http.MethodGet, path, nil, "test-secret")
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid time range, got %d", recorder.Code)
+	}
+
+	var response pdepErrorResponse
+	if err := common.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if response.Message == "" {
+		t.Fatalf("expected non-empty error message")
+	}
+}
+
+func TestPDEPGetTokenAggregated_RejectsNonOwnerTokenWith403(t *testing.T) {
+	db := setupPDEPProviderControllerTestDB(t)
+	seedPDEPProviderOwnerUser(t, db, 6201, common.UserStatusEnabled)
+	token := seedPDEPProviderToken(t, db, 6202, "other-owner", "abcd1234owner62020000000000000000000000000000", 1710752400)
+	t.Setenv("PDEP_PROVIDER_SECRET", "test-secret")
+	t.Setenv("PDEP_PROVIDER_OWNER_USER_ID", "6201")
+
+	engine := newPDEPProviderTestRouter()
+	start := "2026-03-19T00:00:00Z"
+	end := "2026-03-19T01:00:00Z"
+	path := fmt.Sprintf("/api/pdep/v1/tokens/aggregated?sourceId=token-%d&startTime=%s&endTime=%s", token.Id, url.QueryEscape(start), url.QueryEscape(end))
+	recorder := doPDEPProviderRequest(t, engine, http.MethodGet, path, nil, "test-secret")
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-owner token, got %d", recorder.Code)
+	}
+
+	var response pdepErrorResponse
+	if err := common.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to decode forbidden response: %v", err)
+	}
+	if response.Message != "forbidden" {
+		t.Fatalf("expected message forbidden, got %s", response.Message)
+	}
+}
+
+func TestPDEPGetTokenAggregated_ReturnsTenMinuteBuckets(t *testing.T) {
+	db := setupPDEPProviderControllerTestDB(t)
+	seedPDEPProviderOwnerUser(t, db, 6301, common.UserStatusEnabled)
+	token := seedPDEPProviderToken(t, db, 6301, "owner", "abcd1234owner63010000000000000000000000000000", 1710752400)
+	t.Setenv("PDEP_PROVIDER_SECRET", "test-secret")
+	t.Setenv("PDEP_PROVIDER_OWNER_USER_ID", "6301")
+
+	start := time.Date(2026, 3, 19, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 3, 19, 0, 30, 0, 0, time.UTC)
+	seedLogs := []model.Log{
+		{UserId: 6301, TokenId: token.Id, Type: model.LogTypeConsume, Quota: 100, CreatedAt: start.Add(60 * time.Second).Unix()},
+		{UserId: 6301, TokenId: token.Id, Type: model.LogTypeConsume, Quota: 30, CreatedAt: start.Add(620 * time.Second).Unix()},
+		{UserId: 6301, TokenId: token.Id, Type: model.LogTypeConsume, Quota: 50, CreatedAt: start.Add(1199 * time.Second).Unix()},
+		{UserId: 6301, TokenId: token.Id, Type: model.LogTypeManage, Quota: 999, CreatedAt: start.Add(621 * time.Second).Unix()},
+	}
+	for _, item := range seedLogs {
+		entry := item
+		if err := db.Create(&entry).Error; err != nil {
+			t.Fatalf("failed to seed log: %v", err)
+		}
+	}
+
+	engine := newPDEPProviderTestRouter()
+	path := fmt.Sprintf(
+		"/api/pdep/v1/tokens/aggregated?sourceId=token-%d&startTime=%s&endTime=%s",
+		token.Id,
+		url.QueryEscape(start.Format(time.RFC3339)),
+		url.QueryEscape(end.Format(time.RFC3339)),
+	)
+	recorder := doPDEPProviderRequest(t, engine, http.MethodGet, path, nil, "test-secret")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+
+	var response pdepAggregatedResponse
+	if err := common.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to decode aggregated response: %v", err)
+	}
+	if len(response.Buckets) != 2 {
+		t.Fatalf("expected 2 buckets, got %d", len(response.Buckets))
+	}
+	if response.Buckets[0].Timestamp != "2026-03-19T00:00:00Z" || response.Buckets[0].Usage != 100 || response.Buckets[0].Refill != 0 || response.Buckets[0].Net != 100 {
+		t.Fatalf("unexpected first bucket: %+v", response.Buckets[0])
+	}
+	if response.Buckets[1].Timestamp != "2026-03-19T00:10:00Z" || response.Buckets[1].Usage != 80 || response.Buckets[1].Refill != 0 || response.Buckets[1].Net != 80 {
+		t.Fatalf("unexpected second bucket: %+v", response.Buckets[1])
 	}
 }

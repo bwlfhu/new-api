@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 var ErrPDEPTokenNameConflict = errors.New("pdep token name conflict")
 var ErrPDEPForbiddenToken = errors.New("pdep forbidden token")
+var ErrPDEPInvalidSourceID = errors.New("pdep invalid source id")
 
 type PDEPTokenItem struct {
 	ID        string  `json:"id"`
@@ -32,6 +34,13 @@ type PDEPTokenCreateResult struct {
 	CreatedAt string `json:"createdAt"`
 	IsActive  bool   `json:"isActive"`
 	Key       string `json:"key"`
+}
+
+type PDEPAggregatedBucket struct {
+	Timestamp string `json:"timestamp"`
+	Usage     int    `json:"usage"`
+	Refill    int    `json:"refill"`
+	Net       int    `json:"net"`
 }
 
 func buildPDEPKeyPrefix(key string) string {
@@ -212,4 +221,73 @@ func DeletePDEPToken(ownerID int, tokenID int) error {
 		return ErrPDEPForbiddenToken
 	}
 	return token.Delete()
+}
+
+func parsePDEPSourceID(sourceID string) (int, error) {
+	if !strings.HasPrefix(sourceID, "token-") {
+		return 0, ErrPDEPInvalidSourceID
+	}
+	rawID := strings.TrimPrefix(sourceID, "token-")
+	tokenID, err := strconv.Atoi(rawID)
+	if err != nil || tokenID <= 0 {
+		return 0, ErrPDEPInvalidSourceID
+	}
+	return tokenID, nil
+}
+
+func GetPDEPTokenAggregated(ownerID int, sourceID string, startUTC time.Time, endUTC time.Time) ([]PDEPAggregatedBucket, error) {
+	tokenID, err := parsePDEPSourceID(sourceID)
+	if err != nil {
+		return nil, err
+	}
+
+	var token Token
+	err = DB.Select("id,user_id").Where("id = ?", tokenID).Take(&token).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrPDEPForbiddenToken
+	}
+	if err != nil {
+		return nil, err
+	}
+	if token.UserId != ownerID {
+		return nil, ErrPDEPForbiddenToken
+	}
+
+	startTs := startUTC.UTC().Unix()
+	endTs := endUTC.UTC().Unix()
+
+	var logs []Log
+	err = LOG_DB.Select("created_at,quota").
+		Where("type = ? AND token_id = ? AND created_at >= ? AND created_at < ?", LogTypeConsume, tokenID, startTs, endTs).
+		Order("created_at asc").
+		Find(&logs).Error
+	if err != nil {
+		return nil, err
+	}
+
+	usageByBucket := make(map[int64]int)
+	for i := range logs {
+		bucketTS := (logs[i].CreatedAt / 600) * 600
+		usageByBucket[bucketTS] += logs[i].Quota
+	}
+
+	bucketTimestamps := make([]int64, 0, len(usageByBucket))
+	for ts := range usageByBucket {
+		bucketTimestamps = append(bucketTimestamps, ts)
+	}
+	sort.Slice(bucketTimestamps, func(i, j int) bool {
+		return bucketTimestamps[i] < bucketTimestamps[j]
+	})
+
+	buckets := make([]PDEPAggregatedBucket, 0, len(bucketTimestamps))
+	for _, ts := range bucketTimestamps {
+		usage := usageByBucket[ts]
+		buckets = append(buckets, PDEPAggregatedBucket{
+			Timestamp: toRFC3339UTC(ts),
+			Usage:     usage,
+			Refill:    0,
+			Net:       usage,
+		})
+	}
+	return buckets, nil
 }
