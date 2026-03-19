@@ -167,7 +167,7 @@ func TestShouldSendUpstreamModelUpdateNotification(t *testing.T) {
 	require.True(t, shouldSendUpstreamModelUpdateNotification(baseTime+90001, 0, 0))
 }
 
-func TestValidateChannel_CodexKeyValidation(t *testing.T) {
+func TestValidateChannelCodexKeyValidation(t *testing.T) {
 	t.Run("accept normal api key", func(t *testing.T) {
 		channel := &model.Channel{
 			Type: constant.ChannelTypeCodex,
@@ -192,6 +192,16 @@ func TestValidateChannel_CodexKeyValidation(t *testing.T) {
 		channel := &model.Channel{
 			Type: constant.ChannelTypeCodex,
 			Key:  `{"access_token":"token-123","account_id":"acct-456"}`,
+		}
+
+		err := validateChannel(channel, true)
+		require.NoError(t, err)
+	})
+
+	t.Run("accept valid oauth json with leading whitespace", func(t *testing.T) {
+		channel := &model.Channel{
+			Type: constant.ChannelTypeCodex,
+			Key:  "  \n\t {\"access_token\":\"token-123\",\"account_id\":\"acct-456\"}",
 		}
 
 		err := validateChannel(channel, true)
