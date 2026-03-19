@@ -2467,8 +2467,7 @@ const EditChannelModal = (props) => {
                                       {t('Codex 授权')}
                                     </Button>
                                     {isEdit &&
-                                      parseCodexCredential(inputs.key).mode ===
-                                        'oauth' && (
+                                      codexCredentialMode === 'oauth_json' && (
                                         <Button
                                           size='small'
                                           type='primary'
