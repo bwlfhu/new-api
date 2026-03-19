@@ -1,4 +1,4 @@
-package controller
+package controller_test
 
 import (
 	"fmt"
@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/router"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -23,6 +23,7 @@ func setupPDEPProviderControllerTestDB(t *testing.T) *gorm.DB {
 	common.UsingMySQL = false
 	common.UsingPostgreSQL = false
 	common.RedisEnabled = false
+	common.GlobalApiRateLimitEnable = false
 
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
@@ -66,9 +67,7 @@ func seedPDEPProviderOwnerUser(t *testing.T, db *gorm.DB, id int, status int) {
 
 func newPDEPProviderTestRouter() *gin.Engine {
 	engine := gin.New()
-	group := engine.Group("/api/pdep/v1")
-	group.Use(middleware.PDEPProviderAuth())
-	group.GET("/tokens", PDEPProviderGetTokens)
+	router.SetApiRouter(engine)
 	return engine
 }
 
@@ -163,6 +162,55 @@ func TestPDEPProviderTokens_RejectsInvalidOwnerUser(t *testing.T) {
 
 			if recorder.Code != http.StatusForbidden {
 				t.Fatalf("expected 403 for invalid owner user, got %d", recorder.Code)
+			}
+		})
+	}
+}
+
+func TestPDEPProviderRoutes_ValidAuth_ReachesPlaceholderController(t *testing.T) {
+	db := setupPDEPProviderControllerTestDB(t)
+	seedPDEPProviderOwnerUser(t, db, 2101, common.UserStatusEnabled)
+	t.Setenv("PDEP_PROVIDER_SECRET", "valid-secret")
+	t.Setenv("PDEP_PROVIDER_OWNER_USER_ID", " 2101 ")
+
+	testRoutes := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{
+			name:   "get-tokens",
+			method: http.MethodGet,
+			path:   "/api/pdep/v1/tokens",
+		},
+		{
+			name:   "post-tokens",
+			method: http.MethodPost,
+			path:   "/api/pdep/v1/tokens",
+		},
+		{
+			name:   "delete-token",
+			method: http.MethodDelete,
+			path:   "/api/pdep/v1/tokens/1",
+		},
+		{
+			name:   "get-aggregated-tokens",
+			method: http.MethodGet,
+			path:   "/api/pdep/v1/tokens/aggregated",
+		},
+	}
+
+	for _, testRoute := range testRoutes {
+		t.Run(testRoute.name, func(t *testing.T) {
+			router := newPDEPProviderTestRouter()
+			recorder := httptest.NewRecorder()
+			req := httptest.NewRequest(testRoute.method, testRoute.path, nil)
+			req.Header.Set("Authorization", "Bearer valid-secret")
+
+			router.ServeHTTP(recorder, req)
+
+			if recorder.Code != http.StatusNotImplemented {
+				t.Fatalf("expected 501 for %s %s, got %d", testRoute.method, testRoute.path, recorder.Code)
 			}
 		})
 	}

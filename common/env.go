@@ -48,5 +48,14 @@ func GetPDEPProviderSecret() string {
 }
 
 func GetPDEPProviderOwnerUserID() int {
-	return GetEnvOrDefault(PDEP_PROVIDER_OWNER_USER_ID, 0)
+	ownerIDRaw := strings.TrimSpace(GetEnvOrDefaultString(PDEP_PROVIDER_OWNER_USER_ID, ""))
+	if ownerIDRaw == "" {
+		return 0
+	}
+	ownerID, err := strconv.Atoi(ownerIDRaw)
+	if err != nil {
+		SysError(fmt.Sprintf("failed to parse %s: %s, using default value: %d", PDEP_PROVIDER_OWNER_USER_ID, err.Error(), 0))
+		return 0
+	}
+	return ownerID
 }
