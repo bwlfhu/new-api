@@ -124,6 +124,9 @@ func InitEnv() {
 	SearchRateLimitEnable = GetEnvOrDefaultBool("SEARCH_RATE_LIMIT_ENABLE", true)
 	SearchRateLimitNum = GetEnvOrDefault("SEARCH_RATE_LIMIT", 10)
 	SearchRateLimitDuration = int64(GetEnvOrDefault("SEARCH_RATE_LIMIT_DURATION", 60))
+	PDEPUsageBucketFlushIntervalSeconds = GetEnvOrDefault("PDEP_USAGE_BUCKET_FLUSH_INTERVAL_SECONDS", 60)
+	PDEPUsageBucketRedisTTLSeconds = GetEnvOrDefault("PDEP_USAGE_BUCKET_REDIS_TTL_SECONDS", 7200)
+	PDEPUsageBucketRetentionDays = GetEnvOrDefault("PDEP_USAGE_BUCKET_RETENTION_DAYS", 90)
 	initConstantEnv()
 }
 

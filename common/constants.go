@@ -108,6 +108,9 @@ var AutomaticDisableChannelEnabled = false
 var AutomaticEnableChannelEnabled = false
 var QuotaRemindThreshold = 1000
 var PreConsumedQuota = 500
+var PDEPUsageBucketFlushIntervalSeconds int
+var PDEPUsageBucketRedisTTLSeconds int
+var PDEPUsageBucketRetentionDays int
 
 var RetryTimes = 0
 
