@@ -1,13 +1,16 @@
 package model
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/QuantumNous/new-api/common"
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/QuantumNous/new-api/common"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/glebarez/sqlite"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
@@ -157,6 +160,72 @@ func TestPDEPUsageBucketDialectSQLs(t *testing.T) {
 	require.Contains(t, pgSQL, `"updated_at"`)
 }
 
+func TestPDEPUsageBucketAccumulate_WritesRedisHashAndPendingSet(t *testing.T) {
+	mr := miniredis.RunT(t)
+	previousRedisEnabled := common.RedisEnabled
+	previousRDB := common.RDB
+	previousTTL := common.PDEPUsageBucketRedisTTLSeconds
+
+	common.RedisEnabled = true
+	common.RDB = redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	common.PDEPUsageBucketRedisTTLSeconds = 600
+	t.Cleanup(func() {
+		common.RedisEnabled = previousRedisEnabled
+		common.RDB = previousRDB
+		common.PDEPUsageBucketRedisTTLSeconds = previousTTL
+	})
+
+	ts := time.Date(2026, 3, 22, 10, 19, 59, 0, time.UTC).Unix()
+	require.NoError(t, AccumulatePDEPUsageBucket(7, 9, ts, 123, 45))
+
+	bucketStart := time.Date(2026, 3, 22, 10, 10, 0, 0, time.UTC).Unix()
+	key := pdepUsageHotKey(bucketStart, 7, 9)
+	values, err := common.RDB.HGetAll(context.Background(), key).Result()
+	require.NoError(t, err)
+	require.Equal(t, "123", values["token_used"])
+	require.Equal(t, "45", values["quota_used"])
+	require.Equal(t, "1", values["request_count"])
+
+	isPending, err := common.RDB.SIsMember(context.Background(), pdepUsagePendingSetKey(), key).Result()
+	require.NoError(t, err)
+	require.True(t, isPending)
+
+	expiration := time.Duration(common.PDEPUsageBucketRedisTTLSeconds) * time.Second
+	hashTTL, err := common.RDB.TTL(context.Background(), key).Result()
+	require.NoError(t, err)
+	require.Equal(t, expiration, hashTTL)
+	pendingTTL, err := common.RDB.TTL(context.Background(), pdepUsagePendingSetKey()).Result()
+	require.NoError(t, err)
+	require.Equal(t, expiration, pendingTTL)
+}
+
+func TestAccumulatePDEPUsageBucket_NoopsWhenRedisUnavailableOrInvalid(t *testing.T) {
+	mr := miniredis.RunT(t)
+	previousRedisEnabled := common.RedisEnabled
+	previousRDB := common.RDB
+
+	common.RedisEnabled = false
+	common.RDB = redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() {
+		common.RedisEnabled = previousRedisEnabled
+		common.RDB = previousRDB
+	})
+
+	require.NoError(t, AccumulatePDEPUsageBucket(1, 1, time.Now().Unix(), 1, 1))
+	require.Empty(t, mr.Keys())
+
+	common.RedisEnabled = true
+	common.RDB = nil
+	require.NoError(t, AccumulatePDEPUsageBucket(1, 1, time.Now().Unix(), 1, 1))
+	require.Empty(t, mr.Keys())
+
+	common.RDB = redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	require.NoError(t, AccumulatePDEPUsageBucket(0, 1, time.Now().Unix(), 1, 1))
+	require.Empty(t, mr.Keys())
+	require.NoError(t, AccumulatePDEPUsageBucket(1, 0, time.Now().Unix(), 1, 1))
+	require.Empty(t, mr.Keys())
+}
+
 func openMySQLMockDB(t *testing.T) (*gorm.DB, func()) {
 	t.Helper()
 	sqlDB, _, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
@@ -178,7 +247,7 @@ func openPostgresMockDB(t *testing.T) (*gorm.DB, func()) {
 	sqlDB, _, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	require.NoError(t, err)
 	gormDB, err := gorm.Open(postgres.New(postgres.Config{
-		Conn:               sqlDB,
+		Conn:                 sqlDB,
 		PreferSimpleProtocol: true,
 	}), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),

@@ -189,12 +189,23 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		Other:     otherStr,
 	}
 	err := LOG_DB.Create(log).Error
+	created := err == nil
 	if err != nil {
 		logger.LogError(c, "failed to record log: "+err.Error())
 	}
 	if common.DataExportEnabled {
 		gopool.Go(func() {
 			LogQuotaData(userId, username, params.ModelName, params.Quota, common.GetTimestamp(), params.PromptTokens+params.CompletionTokens)
+		})
+	}
+	if created && params.TokenId > 0 {
+		tokenUsed := params.PromptTokens + params.CompletionTokens
+		quotaUsed := params.Quota
+		logCreatedAt := log.CreatedAt
+		gopool.Go(func() {
+			if err := AccumulatePDEPUsageBucket(userId, params.TokenId, logCreatedAt, tokenUsed, quotaUsed); err != nil {
+				common.SysLog("failed to accumulate PDEP usage bucket: " + err.Error())
+			}
 		})
 	}
 }
