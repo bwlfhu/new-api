@@ -95,6 +95,8 @@ func main() {
 
 	// 数据看板
 	go model.UpdateQuotaData()
+	model.StartPDEPUsageBucketFlushTask()
+	model.StartPDEPUsageBucketCleanupTask()
 
 	if os.Getenv("CHANNEL_UPDATE_FREQUENCY") != "" {
 		frequency, err := strconv.Atoi(os.Getenv("CHANNEL_UPDATE_FREQUENCY"))
