@@ -9,9 +9,9 @@ import (
 
 type PDEPTokenUsageBucket struct {
 	ID           int   `json:"id"`
-	OwnerID      int   `json:"owner_id" gorm:"index:idx_pdep_usage_owner_bucket,priority:1;index:idx_pdep_usage_owner_token_bucket,priority:1"`
-	TokenID      int   `json:"token_id" gorm:"index:idx_pdep_usage_token_bucket,priority:1;index:idx_pdep_usage_owner_token_bucket,priority:2"`
-	BucketStart  int64 `json:"bucket_start" gorm:"bigint;index:idx_pdep_usage_token_bucket,priority:2;index:idx_pdep_usage_owner_bucket,priority:2;uniqueIndex:idx_pdep_usage_owner_token_bucket,priority:3"`
+	OwnerID      int   `json:"owner_id" gorm:"not null;index:idx_pdep_usage_owner_bucket,priority:1;index:idx_pdep_usage_owner_token_bucket,priority:1"`
+	TokenID      int   `json:"token_id" gorm:"not null;index:idx_pdep_usage_token_bucket,priority:1;index:idx_pdep_usage_owner_token_bucket,priority:2"`
+	BucketStart  int64 `json:"bucket_start" gorm:"not null;bigint;index:idx_pdep_usage_token_bucket,priority:2;index:idx_pdep_usage_owner_bucket,priority:2;uniqueIndex:idx_pdep_usage_owner_token_bucket,priority:3"`
 	TokenUsed    int64 `json:"token_used" gorm:"not null;default:0"`
 	QuotaUsed    int64 `json:"quota_used" gorm:"not null;default:0"`
 	RequestCount int64 `json:"request_count" gorm:"not null;default:0"`
@@ -29,12 +29,17 @@ func pdepUsageBucketStart(ts int64) int64 {
 
 func upsertPDEPUsageBucket(delta PDEPTokenUsageBucket) error {
 	now := time.Now().Unix()
+	if delta.BucketStart == 0 {
+		delta.BucketStart = pdepUsageBucketStart(now)
+	} else {
+		delta.BucketStart = pdepUsageBucketStart(delta.BucketStart)
+	}
 	if delta.CreatedAt == 0 {
 		delta.CreatedAt = now
 	}
 	delta.UpdatedAt = now
 	return DB.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "owner_id"}, {Name: "token_id"}, {Name: "bucket_start"}},
+		Columns: pdepUsageBucketConflictColumns(),
 		DoUpdates: clause.Assignments(map[string]interface{}{
 			"token_used":    gorm.Expr("token_used + ?", delta.TokenUsed),
 			"quota_used":    gorm.Expr("quota_used + ?", delta.QuotaUsed),
@@ -42,4 +47,12 @@ func upsertPDEPUsageBucket(delta PDEPTokenUsageBucket) error {
 			"updated_at":    now,
 		}),
 	}).Create(&delta).Error
+}
+
+func pdepUsageBucketConflictColumns() []clause.Column {
+	return []clause.Column{
+		{Name: "owner_id"},
+		{Name: "token_id"},
+		{Name: "bucket_start"},
+	}
 }

@@ -67,3 +67,55 @@ func TestPDEPUsageBucketUpsert_IncrementsExistingRow(t *testing.T) {
 	require.EqualValues(t, 50, row.QuotaUsed)
 	require.EqualValues(t, 2, row.RequestCount)
 }
+
+func TestPDEPUsageBucketUpsert_NormalizesBucketStart(t *testing.T) {
+	_ = setupPDEPUsageBucketDB(t)
+	rawStart := time.Date(2026, 3, 22, 10, 12, 34, 0, time.UTC).Unix()
+	expectedStart := pdepUsageBucketStart(rawStart)
+
+	require.NoError(t, upsertPDEPUsageBucket(PDEPTokenUsageBucket{
+		OwnerID:      3,
+		TokenID:      4,
+		BucketStart:  rawStart,
+		TokenUsed:    50,
+		QuotaUsed:    10,
+		RequestCount: 1,
+	}))
+
+	var row PDEPTokenUsageBucket
+	require.NoError(t, DB.Where("owner_id = ? AND token_id = ?", 3, 4).First(&row).Error)
+	require.EqualValues(t, expectedStart, row.BucketStart)
+}
+
+func TestPDEPUsageBucketSchemaConstraints(t *testing.T) {
+	db := setupPDEPUsageBucketDB(t)
+	columnTypes, err := db.Migrator().ColumnTypes(&PDEPTokenUsageBucket{})
+	require.NoError(t, err)
+	required := map[string]bool{
+		"owner_id":     true,
+		"token_id":     true,
+		"bucket_start": true,
+	}
+	found := map[string]bool{}
+	for _, ct := range columnTypes {
+		if _, ok := required[ct.Name()]; ok {
+			nullable, ok := ct.Nullable()
+			require.True(t, ok, "Nullable info unavailable for column %s", ct.Name())
+			require.False(t, nullable, "column %s should be NOT NULL", ct.Name())
+			found[ct.Name()] = true
+		}
+	}
+	require.Equal(t, len(required), len(found))
+}
+
+func TestPDEPUsageBucketConflictColumns(t *testing.T) {
+	columns := pdepUsageBucketConflictColumns()
+	names := map[string]struct{}{}
+	for _, col := range columns {
+		names[col.Name] = struct{}{}
+	}
+	require.Contains(t, names, "owner_id")
+	require.Contains(t, names, "token_id")
+	require.Contains(t, names, "bucket_start")
+	require.Len(t, names, 3)
+}
