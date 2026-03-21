@@ -149,14 +149,12 @@ func TestPDEPUsageBucketDialectSQLs(t *testing.T) {
 	defer cleanupPG()
 	pgSQL, _, err := buildPDEPUsageBucketUpsertSQL(pgDB, delta)
 	require.NoError(t, err)
-	require.Contains(t, strings.ToUpper(pgSQL), "ON CONFLICT")
-	require.Contains(t, pgSQL, "owner_id")
-	require.Contains(t, pgSQL, "token_id")
-	require.Contains(t, pgSQL, "bucket_start")
-	require.Contains(t, pgSQL, "token_used")
-	require.Contains(t, pgSQL, "quota_used")
-	require.Contains(t, pgSQL, "request_count")
-	require.Contains(t, pgSQL, "updated_at")
+	require.Contains(t, strings.ToUpper(pgSQL), `ON CONFLICT ("OWNER_ID","TOKEN_ID","BUCKET_START")`)
+	require.Contains(t, pgSQL, `"owner_id","token_id","bucket_start"`)
+	require.Contains(t, pgSQL, `"quota_used"=quota_used +`)
+	require.Contains(t, pgSQL, `"request_count"=request_count +`)
+	require.Contains(t, pgSQL, `"token_used"=token_used +`)
+	require.Contains(t, pgSQL, `"updated_at"`)
 }
 
 func openMySQLMockDB(t *testing.T) (*gorm.DB, func()) {
