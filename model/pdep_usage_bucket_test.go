@@ -1,13 +1,18 @@
 package model
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func setupPDEPUsageBucketDB(t *testing.T) *gorm.DB {
@@ -118,4 +123,70 @@ func TestPDEPUsageBucketConflictColumns(t *testing.T) {
 	require.Contains(t, names, "token_id")
 	require.Contains(t, names, "bucket_start")
 	require.Len(t, names, 3)
+}
+
+func TestPDEPUsageBucketDialectSQLs(t *testing.T) {
+	delta := PDEPTokenUsageBucket{
+		OwnerID:      7,
+		TokenID:      8,
+		BucketStart:  time.Now().Unix(),
+		TokenUsed:    15,
+		QuotaUsed:    6,
+		RequestCount: 2,
+	}
+
+	mysqlDB, cleanupMySQL := openMySQLMockDB(t)
+	defer cleanupMySQL()
+	mysqlSQL, _, err := buildPDEPUsageBucketUpsertSQL(mysqlDB, delta)
+	require.NoError(t, err)
+	require.Contains(t, mysqlSQL, "ON DUPLICATE KEY UPDATE")
+	require.Contains(t, mysqlSQL, "token_used")
+	require.Contains(t, mysqlSQL, "quota_used")
+	require.Contains(t, mysqlSQL, "request_count")
+	require.Contains(t, mysqlSQL, "updated_at")
+
+	pgDB, cleanupPG := openPostgresMockDB(t)
+	defer cleanupPG()
+	pgSQL, _, err := buildPDEPUsageBucketUpsertSQL(pgDB, delta)
+	require.NoError(t, err)
+	require.Contains(t, strings.ToUpper(pgSQL), "ON CONFLICT")
+	require.Contains(t, pgSQL, "owner_id")
+	require.Contains(t, pgSQL, "token_id")
+	require.Contains(t, pgSQL, "bucket_start")
+	require.Contains(t, pgSQL, "token_used")
+	require.Contains(t, pgSQL, "quota_used")
+	require.Contains(t, pgSQL, "request_count")
+	require.Contains(t, pgSQL, "updated_at")
+}
+
+func openMySQLMockDB(t *testing.T) (*gorm.DB, func()) {
+	t.Helper()
+	sqlDB, _, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	require.NoError(t, err)
+	gormDB, err := gorm.Open(mysql.New(mysql.Config{
+		Conn:                      sqlDB,
+		SkipInitializeWithVersion: true,
+	}), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	return gormDB, func() {
+		sqlDB.Close()
+	}
+}
+
+func openPostgresMockDB(t *testing.T) (*gorm.DB, func()) {
+	t.Helper()
+	sqlDB, _, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	require.NoError(t, err)
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{
+		Conn:               sqlDB,
+		PreferSimpleProtocol: true,
+	}), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	return gormDB, func() {
+		sqlDB.Close()
+	}
 }

@@ -28,23 +28,14 @@ func pdepUsageBucketStart(ts int64) int64 {
 }
 
 func upsertPDEPUsageBucket(delta PDEPTokenUsageBucket) error {
-	now := time.Now().Unix()
-	if delta.BucketStart == 0 {
-		delta.BucketStart = pdepUsageBucketStart(now)
-	} else {
-		delta.BucketStart = pdepUsageBucketStart(delta.BucketStart)
-	}
-	if delta.CreatedAt == 0 {
-		delta.CreatedAt = now
-	}
-	delta.UpdatedAt = now
+	preparePDEPUsageBucketDelta(&delta)
 	return DB.Clauses(clause.OnConflict{
 		Columns: pdepUsageBucketConflictColumns(),
 		DoUpdates: clause.Assignments(map[string]interface{}{
 			"token_used":    gorm.Expr("token_used + ?", delta.TokenUsed),
 			"quota_used":    gorm.Expr("quota_used + ?", delta.QuotaUsed),
 			"request_count": gorm.Expr("request_count + ?", delta.RequestCount),
-			"updated_at":    now,
+			"updated_at":    delta.UpdatedAt,
 		}),
 	}).Create(&delta).Error
 }
@@ -55,4 +46,47 @@ func pdepUsageBucketConflictColumns() []clause.Column {
 		{Name: "token_id"},
 		{Name: "bucket_start"},
 	}
+}
+
+func preparePDEPUsageBucketDelta(delta *PDEPTokenUsageBucket) {
+	now := time.Now().Unix()
+	if delta.BucketStart == 0 {
+		delta.BucketStart = pdepUsageBucketStart(now)
+	} else {
+		delta.BucketStart = pdepUsageBucketStart(delta.BucketStart)
+	}
+	if delta.CreatedAt == 0 {
+		delta.CreatedAt = now
+	}
+	delta.UpdatedAt = now
+}
+
+func buildPDEPUsageBucketUpsertSQL(db *gorm.DB, delta PDEPTokenUsageBucket) (string, []interface{}, error) {
+	preparePDEPUsageBucketDelta(&delta)
+	dry := db.Session(&gorm.Session{DryRun: true, SkipDefaultTransaction: true})
+	const callbackName = "pdep_usage_bucket_capture_sql"
+	var sql string
+	var vars []interface{}
+	dry.Callback().Create().After("gorm:after_create").Register(callbackName, func(tx *gorm.DB) {
+		if sql == "" {
+			sql = tx.Statement.SQL.String()
+			vars = append([]interface{}{}, tx.Statement.Vars...)
+		}
+	})
+	err := dry.Clauses(clause.OnConflict{
+		Columns: pdepUsageBucketConflictColumns(),
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"token_used":    gorm.Expr("token_used + ?", delta.TokenUsed),
+			"quota_used":    gorm.Expr("quota_used + ?", delta.QuotaUsed),
+			"request_count": gorm.Expr("request_count + ?", delta.RequestCount),
+			"updated_at":    delta.UpdatedAt,
+		}),
+	}).Create(&delta).Error
+	dry.Callback().Create().Remove(callbackName)
+	if sql == "" {
+		dry.Statement.Build("INSERT")
+		sql = dry.Statement.SQL.String()
+		vars = append([]interface{}{}, dry.Statement.Vars...)
+	}
+	return sql, vars, err
 }
