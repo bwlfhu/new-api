@@ -36,18 +36,13 @@ type PDEPTokenCreateResult struct {
 }
 
 type PDEPAggregatedBucket struct {
-	Timestamp string `json:"timestamp"`
-	Usage     int    `json:"usage"`
-	Refill    int    `json:"refill"`
-	Net       int    `json:"net"`
-}
-
-func pdepAggregatedBucketExpr() string {
-	return "created_at - (created_at % 600)"
-}
-
-func pdepAggregatedUsageAlias() string {
-	return "bucket_usage"
+	Timestamp    string `json:"timestamp"`
+	Usage        int64  `json:"usage"`
+	Refill       int64  `json:"refill"`
+	Net          int64  `json:"net"`
+	TokenUsed    int64  `json:"tokenUsed"`
+	QuotaUsed    int64  `json:"quotaUsed"`
+	RequestCount int64  `json:"requestCount"`
 }
 
 func buildPDEPKeyPrefix(key string) string {
@@ -264,17 +259,16 @@ func GetPDEPTokenAggregated(ownerID int, sourceID string, startUTC time.Time, en
 	endTs := endUTC.UTC().Unix()
 
 	type aggregatedRow struct {
-		BucketTS int64 `gorm:"column:bucket_ts"`
-		Usage    int   `gorm:"column:bucket_usage"`
+		BucketStart  int64 `gorm:"column:bucket_start"`
+		TokenUsed    int64 `gorm:"column:token_used"`
+		QuotaUsed    int64 `gorm:"column:quota_used"`
+		RequestCount int64 `gorm:"column:request_count"`
 	}
 	var rows []aggregatedRow
-	bucketExpr := pdepAggregatedBucketExpr()
-	usageAlias := pdepAggregatedUsageAlias()
-	err = LOG_DB.Model(&Log{}).
-		Select(bucketExpr+" AS bucket_ts, COALESCE(SUM(quota), 0) AS "+usageAlias).
-		Where("type = ? AND token_id = ? AND created_at >= ? AND created_at < ?", LogTypeConsume, tokenID, startTs, endTs).
-		Group(bucketExpr).
-		Order("bucket_ts asc").
+	err = DB.Model(&PDEPTokenUsageBucket{}).
+		Select("bucket_start, token_used, quota_used, request_count").
+		Where("owner_id = ? AND token_id = ? AND bucket_start >= ? AND bucket_start < ?", ownerID, tokenID, startTs, endTs).
+		Order("bucket_start asc").
 		Scan(&rows).Error
 	if err != nil {
 		return nil, err
@@ -282,11 +276,16 @@ func GetPDEPTokenAggregated(ownerID int, sourceID string, startUTC time.Time, en
 
 	buckets := make([]PDEPAggregatedBucket, 0, len(rows))
 	for i := range rows {
+		quotaUsed := rows[i].QuotaUsed
+		// 兼容旧字段：usage/net = quotaUsed，refill 固定为 0。
 		buckets = append(buckets, PDEPAggregatedBucket{
-			Timestamp: toRFC3339UTC(rows[i].BucketTS),
-			Usage:     rows[i].Usage,
-			Refill:    0,
-			Net:       rows[i].Usage,
+			Timestamp:    toRFC3339UTC(rows[i].BucketStart),
+			Usage:        quotaUsed,
+			Refill:       0,
+			Net:          quotaUsed,
+			TokenUsed:    rows[i].TokenUsed,
+			QuotaUsed:    quotaUsed,
+			RequestCount: rows[i].RequestCount,
 		})
 	}
 	return buckets, nil

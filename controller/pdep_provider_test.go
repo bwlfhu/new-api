@@ -47,9 +47,12 @@ type pdepErrorResponse struct {
 type pdepAggregatedResponse struct {
 	Buckets []struct {
 		Timestamp string `json:"timestamp"`
-		Usage     int    `json:"usage"`
-		Refill    int    `json:"refill"`
-		Net       int    `json:"net"`
+		Usage        int64 `json:"usage"`
+		Refill       int64 `json:"refill"`
+		Net          int64 `json:"net"`
+		TokenUsed    int64 `json:"tokenUsed"`
+		QuotaUsed    int64 `json:"quotaUsed"`
+		RequestCount int64 `json:"requestCount"`
 	} `json:"buckets"`
 }
 
@@ -71,7 +74,7 @@ func setupPDEPProviderControllerTestDB(t *testing.T) *gorm.DB {
 	model.DB = db
 	model.LOG_DB = db
 
-	if err := db.AutoMigrate(&model.User{}, &model.Token{}, &model.Log{}); err != nil {
+	if err := db.AutoMigrate(&model.User{}, &model.Token{}, &model.Log{}, &model.PDEPTokenUsageBucket{}); err != nil {
 		t.Fatalf("failed to migrate tables: %v", err)
 	}
 
@@ -580,17 +583,66 @@ func TestPDEPGetTokenAggregated_ReturnsTenMinuteBuckets(t *testing.T) {
 
 	start := time.Date(2026, 3, 19, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 3, 19, 0, 30, 0, 0, time.UTC)
-	seedLogs := []model.Log{
-		{UserId: 6301, TokenId: token.Id, Type: model.LogTypeConsume, Quota: 100, CreatedAt: start.Add(60 * time.Second).Unix()},
-		{UserId: 6301, TokenId: token.Id, Type: model.LogTypeConsume, Quota: 30, CreatedAt: start.Add(620 * time.Second).Unix()},
-		{UserId: 6301, TokenId: token.Id, Type: model.LogTypeConsume, Quota: 50, CreatedAt: start.Add(1199 * time.Second).Unix()},
-		{UserId: 6301, TokenId: token.Id, Type: model.LogTypeManage, Quota: 999, CreatedAt: start.Add(621 * time.Second).Unix()},
+	seedTs := start.Unix()
+	// 插入乱序数据，验证接口返回按 bucket_start asc 排序。
+	if err := db.Create(&model.PDEPTokenUsageBucket{
+		OwnerID:      6301,
+		TokenID:      token.Id,
+		BucketStart:  start.Add(10 * time.Minute).Unix(),
+		TokenUsed:    190,
+		QuotaUsed:    80,
+		RequestCount: 1,
+		CreatedAt:    seedTs,
+		UpdatedAt:    seedTs,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed usage bucket 2 (out-of-order insert): %v", err)
 	}
-	for _, item := range seedLogs {
-		entry := item
-		if err := db.Create(&entry).Error; err != nil {
-			t.Fatalf("failed to seed log: %v", err)
-		}
+	if err := db.Create(&model.PDEPTokenUsageBucket{
+		OwnerID:      6301,
+		TokenID:      token.Id,
+		BucketStart:  start.Unix(),
+		TokenUsed:    250,
+		QuotaUsed:    100,
+		RequestCount: 2,
+		CreatedAt:    seedTs,
+		UpdatedAt:    seedTs,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed usage bucket 1: %v", err)
+	}
+	// 边界桶：bucket_start < start 以及 bucket_start == end 必须被排除（查询范围 [start, end)）。
+	if err := db.Create(&model.PDEPTokenUsageBucket{
+		OwnerID:      6301,
+		TokenID:      token.Id,
+		BucketStart:  start.Add(-1 * time.Second).Unix(),
+		TokenUsed:    9999,
+		QuotaUsed:    9999,
+		RequestCount: 9999,
+		CreatedAt:    seedTs,
+		UpdatedAt:    seedTs,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed usage bucket start-1s: %v", err)
+	}
+	if err := db.Create(&model.PDEPTokenUsageBucket{
+		OwnerID:      6301,
+		TokenID:      token.Id,
+		BucketStart:  end.Unix(),
+		TokenUsed:    8888,
+		QuotaUsed:    8888,
+		RequestCount: 8888,
+		CreatedAt:    seedTs,
+		UpdatedAt:    seedTs,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed usage bucket end: %v", err)
+	}
+	// 种入与桶表矛盾的 logs，证明接口聚合不回退扫 logs。
+	if err := db.Create(&model.Log{
+		UserId:    6301,
+		TokenId:   token.Id,
+		Type:      model.LogTypeConsume,
+		Quota:     777777,
+		CreatedAt: start.Add(60 * time.Second).Unix(),
+	}).Error; err != nil {
+		t.Fatalf("failed to seed conflicting consume log: %v", err)
 	}
 
 	engine := newPDEPProviderTestRouter()
@@ -612,10 +664,22 @@ func TestPDEPGetTokenAggregated_ReturnsTenMinuteBuckets(t *testing.T) {
 	if len(response.Buckets) != 2 {
 		t.Fatalf("expected 2 buckets, got %d", len(response.Buckets))
 	}
-	if response.Buckets[0].Timestamp != "2026-03-19T00:00:00Z" || response.Buckets[0].Usage != 100 || response.Buckets[0].Refill != 0 || response.Buckets[0].Net != 100 {
+	if response.Buckets[0].Timestamp != "2026-03-19T00:00:00Z" ||
+		response.Buckets[0].Usage != 100 ||
+		response.Buckets[0].Refill != 0 ||
+		response.Buckets[0].Net != 100 ||
+		response.Buckets[0].TokenUsed != 250 ||
+		response.Buckets[0].QuotaUsed != 100 ||
+		response.Buckets[0].RequestCount != 2 {
 		t.Fatalf("unexpected first bucket: %+v", response.Buckets[0])
 	}
-	if response.Buckets[1].Timestamp != "2026-03-19T00:10:00Z" || response.Buckets[1].Usage != 80 || response.Buckets[1].Refill != 0 || response.Buckets[1].Net != 80 {
+	if response.Buckets[1].Timestamp != "2026-03-19T00:10:00Z" ||
+		response.Buckets[1].Usage != 80 ||
+		response.Buckets[1].Refill != 0 ||
+		response.Buckets[1].Net != 80 ||
+		response.Buckets[1].TokenUsed != 190 ||
+		response.Buckets[1].QuotaUsed != 80 ||
+		response.Buckets[1].RequestCount != 1 {
 		t.Fatalf("unexpected second bucket: %+v", response.Buckets[1])
 	}
 }

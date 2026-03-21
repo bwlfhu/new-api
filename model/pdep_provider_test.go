@@ -37,7 +37,7 @@ func setupPDEPProviderModelTestDB(t *testing.T) *gorm.DB {
 	DB = db
 	LOG_DB = db
 
-	if err := db.AutoMigrate(&User{}, &Token{}, &Log{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &Token{}, &Log{}, &PDEPTokenUsageBucket{}); err != nil {
 		t.Fatalf("failed to migrate tables: %v", err)
 	}
 
@@ -192,20 +192,66 @@ func TestPDEPProvider_GetAggregated_BucketsByTenMinutes(t *testing.T) {
 	start := time.Date(2026, 3, 19, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 3, 19, 0, 30, 0, 0, time.UTC)
 
-	logs := []Log{
-		{UserId: 5101, TokenId: ownerToken.Id, Type: LogTypeConsume, Quota: 100, CreatedAt: start.Add(80 * time.Second).Unix()},
-		{UserId: 5101, TokenId: ownerToken.Id, Type: LogTypeConsume, Quota: 20, CreatedAt: start.Add(599 * time.Second).Unix()},
-		{UserId: 5101, TokenId: ownerToken.Id, Type: LogTypeConsume, Quota: 30, CreatedAt: start.Add(600 * time.Second).Unix()},
-		{UserId: 5101, TokenId: ownerToken.Id, Type: LogTypeConsume, Quota: 50, CreatedAt: start.Add(1199 * time.Second).Unix()},
-		{UserId: 5101, TokenId: ownerToken.Id, Type: LogTypeManage, Quota: 999, CreatedAt: start.Add(610 * time.Second).Unix()},
-		{UserId: 5101, TokenId: ownerToken.Id, Type: LogTypeConsume, Quota: 777, CreatedAt: end.Unix()},
-		{UserId: 5101, TokenId: ownerToken.Id, Type: LogTypeConsume, Quota: 666, CreatedAt: start.Add(-1 * time.Second).Unix()},
+	requireTs := start.Unix()
+	// 插入乱序数据，验证返回按 bucket_start asc 排序。
+	if err := db.Create(&PDEPTokenUsageBucket{
+		OwnerID:      5101,
+		TokenID:      ownerToken.Id,
+		BucketStart:  start.Add(10 * time.Minute).Unix(),
+		TokenUsed:    180,
+		QuotaUsed:    80,
+		RequestCount: 1,
+		CreatedAt:    requireTs,
+		UpdatedAt:    requireTs,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed usage bucket 2 (out-of-order insert): %v", err)
 	}
-	for _, item := range logs {
-		entry := item
-		if err := db.Create(&entry).Error; err != nil {
-			t.Fatalf("failed to seed log: %v", err)
-		}
+	if err := db.Create(&PDEPTokenUsageBucket{
+		OwnerID:      5101,
+		TokenID:      ownerToken.Id,
+		BucketStart:  start.Unix(),
+		TokenUsed:    300,
+		QuotaUsed:    120,
+		RequestCount: 2,
+		CreatedAt:    requireTs,
+		UpdatedAt:    requireTs,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed usage bucket 1: %v", err)
+	}
+	// 边界桶：bucket_start < start 以及 bucket_start == end 必须被排除（查询范围 [start, end)）。
+	if err := db.Create(&PDEPTokenUsageBucket{
+		OwnerID:      5101,
+		TokenID:      ownerToken.Id,
+		BucketStart:  start.Add(-1 * time.Second).Unix(),
+		TokenUsed:    9999,
+		QuotaUsed:    9999,
+		RequestCount: 9999,
+		CreatedAt:    requireTs,
+		UpdatedAt:    requireTs,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed usage bucket start-1s: %v", err)
+	}
+	if err := db.Create(&PDEPTokenUsageBucket{
+		OwnerID:      5101,
+		TokenID:      ownerToken.Id,
+		BucketStart:  end.Unix(),
+		TokenUsed:    8888,
+		QuotaUsed:    8888,
+		RequestCount: 8888,
+		CreatedAt:    requireTs,
+		UpdatedAt:    requireTs,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed usage bucket end: %v", err)
+	}
+	// 种入与桶表矛盾的 logs，证明聚合不再扫描 logs（否则旧逻辑会受 quota 影响）。
+	if err := db.Create(&Log{
+		UserId:    5101,
+		TokenId:   ownerToken.Id,
+		Type:      LogTypeConsume,
+		Quota:     777777,
+		CreatedAt: start.Add(60 * time.Second).Unix(),
+	}).Error; err != nil {
+		t.Fatalf("failed to seed conflicting consume log: %v", err)
 	}
 
 	buckets, err := GetPDEPTokenAggregated(5101, fmt.Sprintf("token-%d", ownerToken.Id), start, end)
@@ -216,20 +262,23 @@ func TestPDEPProvider_GetAggregated_BucketsByTenMinutes(t *testing.T) {
 		t.Fatalf("expected 2 buckets, got %d", len(buckets))
 	}
 
-	if buckets[0].Timestamp != "2026-03-19T00:00:00Z" || buckets[0].Usage != 120 || buckets[0].Refill != 0 || buckets[0].Net != 120 {
+	if buckets[0].Timestamp != "2026-03-19T00:00:00Z" ||
+		buckets[0].Usage != 120 ||
+		buckets[0].Refill != 0 ||
+		buckets[0].Net != 120 ||
+		buckets[0].TokenUsed != 300 ||
+		buckets[0].QuotaUsed != 120 ||
+		buckets[0].RequestCount != 2 {
 		t.Fatalf("unexpected first bucket: %+v", buckets[0])
 	}
-	if buckets[1].Timestamp != "2026-03-19T00:10:00Z" || buckets[1].Usage != 80 || buckets[1].Refill != 0 || buckets[1].Net != 80 {
+	if buckets[1].Timestamp != "2026-03-19T00:10:00Z" ||
+		buckets[1].Usage != 80 ||
+		buckets[1].Refill != 0 ||
+		buckets[1].Net != 80 ||
+		buckets[1].TokenUsed != 180 ||
+		buckets[1].QuotaUsed != 80 ||
+		buckets[1].RequestCount != 1 {
 		t.Fatalf("unexpected second bucket: %+v", buckets[1])
-	}
-}
-
-func TestPDEPProvider_GetAggregated_UsesStableBucketSQLFragments(t *testing.T) {
-	if got := pdepAggregatedBucketExpr(); got != "created_at - (created_at % 600)" {
-		t.Fatalf("unexpected bucket expr: %s", got)
-	}
-	if got := pdepAggregatedUsageAlias(); got != "bucket_usage" {
-		t.Fatalf("unexpected usage alias: %s", got)
 	}
 }
 
