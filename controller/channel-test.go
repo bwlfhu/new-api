@@ -42,6 +42,50 @@ type testResult struct {
 	newAPIError *types.NewAPIError
 }
 
+func readStoredChannelTestConfig(channel *model.Channel) (testModel string, endpointType string, isStream bool) {
+	if channel == nil {
+		return "", "", false
+	}
+	if channel.TestModel != nil {
+		testModel = strings.TrimSpace(*channel.TestModel)
+	}
+	if channel.TestEndpointType != nil {
+		endpointType = strings.TrimSpace(*channel.TestEndpointType)
+	}
+	if channel.TestStream != nil {
+		isStream = *channel.TestStream
+	}
+	return testModel, endpointType, isStream
+}
+
+func resolveTestModel(channel *model.Channel, testModel string) string {
+	resolved := strings.TrimSpace(testModel)
+	if resolved != "" {
+		return resolved
+	}
+	if channel != nil && channel.TestModel != nil {
+		resolved = strings.TrimSpace(*channel.TestModel)
+		if resolved != "" {
+			return resolved
+		}
+	}
+	if channel != nil {
+		models := channel.GetModels()
+		if len(models) > 0 {
+			resolved = strings.TrimSpace(models[0])
+		}
+	}
+	if resolved == "" {
+		resolved = "gpt-4o-mini"
+	}
+	return resolved
+}
+
+func resolveAutoChannelTestArgs(channel *model.Channel) (testModel string, endpointType string, isStream bool) {
+	storedTestModel, storedEndpointType, storedIsStream := readStoredChannelTestConfig(channel)
+	return resolveTestModel(channel, storedTestModel), storedEndpointType, storedIsStream
+}
+
 func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointType string) string {
 	normalized := strings.TrimSpace(endpointType)
 	if normalized != "" {
@@ -76,20 +120,7 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 
-	testModel = strings.TrimSpace(testModel)
-	if testModel == "" {
-		if channel.TestModel != nil && *channel.TestModel != "" {
-			testModel = strings.TrimSpace(*channel.TestModel)
-		} else {
-			models := channel.GetModels()
-			if len(models) > 0 {
-				testModel = strings.TrimSpace(models[0])
-			}
-			if testModel == "" {
-				testModel = "gpt-4o-mini"
-			}
-		}
-	}
+	testModel = resolveTestModel(channel, testModel)
 
 	endpointType = normalizeChannelTestEndpoint(channel, testModel, endpointType)
 
@@ -815,8 +846,9 @@ func testAllChannels(notify bool) error {
 				continue
 			}
 			isChannelEnabled := channel.Status == common.ChannelStatusEnabled
+			testModel, endpointType, isStream := resolveAutoChannelTestArgs(channel)
 			tik := time.Now()
-			result := testChannel(channel, "", "", false)
+			result := testChannel(channel, testModel, endpointType, isStream)
 			tok := time.Now()
 			milliseconds := tok.Sub(tik).Milliseconds()
 

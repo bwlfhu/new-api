@@ -42,6 +42,14 @@ type PDEPAggregatedBucket struct {
 	Net       int    `json:"net"`
 }
 
+func pdepAggregatedBucketExpr() string {
+	return "created_at - (created_at % 600)"
+}
+
+func pdepAggregatedUsageAlias() string {
+	return "bucket_usage"
+}
+
 func buildPDEPKeyPrefix(key string) string {
 	rawKey := strings.TrimPrefix(strings.TrimSpace(key), "sk-")
 	if rawKey == "" {
@@ -257,13 +265,15 @@ func GetPDEPTokenAggregated(ownerID int, sourceID string, startUTC time.Time, en
 
 	type aggregatedRow struct {
 		BucketTS int64 `gorm:"column:bucket_ts"`
-		Usage    int   `gorm:"column:usage"`
+		Usage    int   `gorm:"column:bucket_usage"`
 	}
 	var rows []aggregatedRow
+	bucketExpr := pdepAggregatedBucketExpr()
+	usageAlias := pdepAggregatedUsageAlias()
 	err = LOG_DB.Model(&Log{}).
-		Select("((created_at / 600) * 600) AS bucket_ts, COALESCE(SUM(quota), 0) AS usage").
+		Select(bucketExpr+" AS bucket_ts, COALESCE(SUM(quota), 0) AS "+usageAlias).
 		Where("type = ? AND token_id = ? AND created_at >= ? AND created_at < ?", LogTypeConsume, tokenID, startTs, endTs).
-		Group("((created_at / 600) * 600)").
+		Group(bucketExpr).
 		Order("bucket_ts asc").
 		Scan(&rows).Error
 	if err != nil {

@@ -224,6 +224,15 @@ func TestPDEPProvider_GetAggregated_BucketsByTenMinutes(t *testing.T) {
 	}
 }
 
+func TestPDEPProvider_GetAggregated_UsesStableBucketSQLFragments(t *testing.T) {
+	if got := pdepAggregatedBucketExpr(); got != "created_at - (created_at % 600)" {
+		t.Fatalf("unexpected bucket expr: %s", got)
+	}
+	if got := pdepAggregatedUsageAlias(); got != "bucket_usage" {
+		t.Fatalf("unexpected usage alias: %s", got)
+	}
+}
+
 func TestPDEPProvider_GetAggregated_RejectsInvalidSourceID(t *testing.T) {
 	_ = setupPDEPProviderModelTestDB(t)
 	start := time.Date(2026, 3, 19, 0, 0, 0, 0, time.UTC)

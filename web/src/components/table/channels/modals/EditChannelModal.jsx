@@ -67,6 +67,11 @@ import ChannelKeyDisplay from '../../../common/ui/ChannelKeyDisplay';
 import { useSecureVerification } from '../../../../hooks/common/useSecureVerification';
 import { createApiCalls } from '../../../../services/secureVerification';
 import {
+  TEST_ENDPOINT_TYPE_VALUES,
+  normalizeTestEndpointType,
+  normalizeTestStream,
+} from '../constants/testEndpointOptions';
+import {
   collectInvalidStatusCodeEntries,
   collectNewDisallowedStatusCodeRedirects,
 } from './statusCodeRiskGuard';
@@ -205,6 +210,8 @@ const EditChannelModal = (props) => {
     models: [],
     auto_ban: 1,
     test_model: '',
+    test_endpoint_type: '',
+    test_stream: false,
     groups: ['default'],
     priority: 0,
     weight: 0,
@@ -307,6 +314,43 @@ const EditChannelModal = (props) => {
   );
   const upstreamDetectedModelsOmittedCount =
     upstreamDetectedModels.length - upstreamDetectedModelsPreview.length;
+  const testEndpointTypeOptions = useMemo(
+    () =>
+      TEST_ENDPOINT_TYPE_VALUES.map((value) => {
+        switch (value) {
+          case '':
+            return { value, label: t('自动检测') };
+          case 'openai':
+            return { value, label: 'OpenAI (/v1/chat/completions)' };
+          case 'openai-response':
+            return { value, label: 'OpenAI Response (/v1/responses)' };
+          case 'openai-response-compact':
+            return {
+              value,
+              label: 'OpenAI Response Compaction (/v1/responses/compact)',
+            };
+          case 'anthropic':
+            return { value, label: 'Anthropic (/v1/messages)' };
+          case 'gemini':
+            return {
+              value,
+              label: 'Gemini (/v1beta/models/{model}:generateContent)',
+            };
+          case 'jina-rerank':
+            return { value, label: 'Jina Rerank (/v1/rerank)' };
+          case 'image-generation':
+            return {
+              value,
+              label: `${t('图像生成')} (/v1/images/generations)`,
+            };
+          case 'embeddings':
+            return { value, label: 'Embeddings (/v1/embeddings)' };
+          default:
+            return { value, label: value };
+        }
+      }),
+    [t],
+  );
   const modelSearchMatchedCount = useMemo(() => {
     const keyword = modelSearchValue.trim();
     if (!keyword) {
@@ -989,6 +1033,11 @@ const EditChannelModal = (props) => {
         data.base_url = 'https://ark.cn-beijing.volces.com';
       }
 
+      data.test_endpoint_type = normalizeTestEndpointType(
+        data.test_endpoint_type,
+      );
+      data.test_stream = normalizeTestStream(data.test_stream);
+
       const codexModeFromBackend = data.codex_credential_mode;
       const inferredCodexMode =
         data.type === 57
@@ -1543,6 +1592,15 @@ const EditChannelModal = (props) => {
     const formValues = formApiRef.current ? formApiRef.current.getValues() : {};
     let localInputs = { ...formValues };
     localInputs.param_override = inputs.param_override;
+    if (isEdit) {
+      localInputs.test_endpoint_type = normalizeTestEndpointType(
+        localInputs.test_endpoint_type,
+      );
+      localInputs.test_stream = normalizeTestStream(localInputs.test_stream);
+    } else {
+      delete localInputs.test_endpoint_type;
+      delete localInputs.test_stream;
+    }
 
     if (localInputs.type === 57) {
       const rawKey = (localInputs.key || '').trim();
@@ -3476,6 +3534,30 @@ const EditChannelModal = (props) => {
                       }
                       showClear
                     />
+
+                    {isEdit && (
+                      <>
+                        <Form.Select
+                          field='test_endpoint_type'
+                          label={t('默认测试端点')}
+                          placeholder={t('自动检测')}
+                          optionList={testEndpointTypeOptions}
+                          onChange={(value) =>
+                            handleInputChange('test_endpoint_type', value)
+                          }
+                        />
+
+                        <Form.Switch
+                          field='test_stream'
+                          label={t('默认测试使用流式')}
+                          checkedText={t('开')}
+                          uncheckedText={t('关')}
+                          onChange={(value) =>
+                            handleInputChange('test_stream', value)
+                          }
+                        />
+                      </>
+                    )}
 
                     <JSONEditor
                       key={`model_mapping-${isEdit ? channelId : 'new'}`}

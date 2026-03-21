@@ -32,6 +32,7 @@ import {
 import { IconSearch, IconInfoCircle } from '@douyinfe/semi-icons';
 import { copy, showError, showInfo, showSuccess } from '../../../../helpers';
 import { MODEL_TABLE_PAGE_SIZE } from '../../../../constants';
+import { getTestEndpointTypeOptions } from '../constants/testEndpointOptions';
 
 const ModelTestModal = ({
   showModelTestModal,
@@ -77,27 +78,10 @@ const ModelTestModal = ({
           model.toLowerCase().includes(modelSearchKeyword.toLowerCase()),
         )
     : [];
-
-  const endpointTypeOptions = [
-    { value: '', label: t('自动检测') },
-    { value: 'openai', label: 'OpenAI (/v1/chat/completions)' },
-    { value: 'openai-response', label: 'OpenAI Response (/v1/responses)' },
-    {
-      value: 'openai-response-compact',
-      label: 'OpenAI Response Compaction (/v1/responses/compact)',
-    },
-    { value: 'anthropic', label: 'Anthropic (/v1/messages)' },
-    {
-      value: 'gemini',
-      label: 'Gemini (/v1beta/models/{model}:generateContent)',
-    },
-    { value: 'jina-rerank', label: 'Jina Rerank (/v1/rerank)' },
-    {
-      value: 'image-generation',
-      label: t('图像生成') + ' (/v1/images/generations)',
-    },
-    { value: 'embeddings', label: 'Embeddings (/v1/embeddings)' },
-  ];
+  const endpointTypeOptions = React.useMemo(
+    () => getTestEndpointTypeOptions(t),
+    [t],
+  );
 
   const handleCopySelected = () => {
     if (selectedModelKeys.length === 0) {
@@ -290,16 +274,23 @@ const ModelTestModal = ({
               />
             </div>
             <div className='flex items-center justify-between sm:justify-end gap-2 shrink-0'>
-              <Typography.Text strong className='shrink-0'>
-                {t('流式')}:
-              </Typography.Text>
-              <Switch
-                checked={isStreamTest}
-                onChange={setIsStreamTest}
-                size='small'
-                disabled={streamToggleDisabled}
-                aria-label={t('流式')}
-              />
+              <div className='flex flex-col items-end gap-1'>
+                <div className='flex items-center gap-2'>
+                  <Typography.Text strong className='shrink-0'>
+                    {t('流式')}:
+                  </Typography.Text>
+                  <Switch
+                    checked={isStreamTest}
+                    onChange={setIsStreamTest}
+                    size='small'
+                    disabled={streamToggleDisabled}
+                    aria-label={t('流式')}
+                  />
+                </div>
+                <Typography.Text type='tertiary' size='small'>
+                  {t('默认值来自渠道默认测试配置')}
+                </Typography.Text>
+              </div>
             </div>
           </div>
 
@@ -309,7 +300,7 @@ const ModelTestModal = ({
             icon={<IconInfoCircle />}
             className='!rounded-lg mb-2'
             description={t(
-              '说明：本页测试为非流式请求；若渠道仅支持流式返回，可能出现测试失败，请以实际使用为准。',
+              '说明：默认测试参数来自渠道配置，可在当前弹窗临时覆盖；当前选择会同时用于单测和批量测试。',
             )}
           />
 

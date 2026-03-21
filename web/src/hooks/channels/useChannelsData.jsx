@@ -39,6 +39,10 @@ import { useChannelUpstreamUpdates } from './useChannelUpstreamUpdates';
 import { parseUpstreamUpdateMeta } from './upstreamUpdateUtils';
 import { Modal, Button } from '@douyinfe/semi-ui';
 import { openCodexUsageModal } from '../../components/table/channels/modals/CodexUsageModal';
+import {
+  normalizeTestEndpointType,
+  normalizeTestStream,
+} from '../../components/table/channels/constants/testEndpointOptions';
 
 export const useChannelsData = () => {
   const { t } = useTranslation();
@@ -92,6 +96,22 @@ export const useChannelsData = () => {
   const [isStreamTest, setIsStreamTest] = useState(false);
   const [globalPassThroughEnabled, setGlobalPassThroughEnabled] =
     useState(false);
+
+  useEffect(() => {
+    if (!showModelTestModal || !currentTestChannel) {
+      return;
+    }
+
+    setSelectedEndpointType(
+      normalizeTestEndpointType(currentTestChannel.test_endpoint_type),
+    );
+    setIsStreamTest(normalizeTestStream(currentTestChannel.test_stream));
+  }, [
+    showModelTestModal,
+    currentTestChannel?.id,
+    currentTestChannel?.test_endpoint_type,
+    currentTestChannel?.test_stream,
+  ]);
 
   const fetchGlobalPassThroughEnabled = async () => {
     try {

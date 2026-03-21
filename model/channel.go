@@ -25,6 +25,8 @@ type Channel struct {
 	CodexCredentialMode string  `json:"codex_credential_mode,omitempty" gorm:"-"`
 	OpenAIOrganization  *string `json:"openai_organization"`
 	TestModel           *string `json:"test_model"`
+	TestEndpointType    *string `json:"test_endpoint_type"`
+	TestStream          *bool   `json:"test_stream"`
 	Status              int     `json:"status" gorm:"default:1"`
 	Name                string  `json:"name" gorm:"index"`
 	Weight              *uint   `json:"weight" gorm:"default:0"`
