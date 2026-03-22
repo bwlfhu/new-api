@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -33,7 +34,7 @@ func setupPDEPUsageBucketDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	DB = db
-	require.NoError(t, db.AutoMigrate(&PDEPTokenUsageBucket{}))
+	require.NoError(t, db.AutoMigrate(&PDEPTokenUsageBucket{}, &PDEPTokenUsageFlushRecord{}))
 
 	t.Cleanup(func() {
 		DB = previousDB
@@ -115,6 +116,10 @@ func TestPDEPUsageBucketSchemaConstraints(t *testing.T) {
 		}
 	}
 	require.Equal(t, len(required), len(found))
+
+	// Cleanup runs by bucket_start, so we must have a standalone bucket_start index.
+	require.True(t, db.Migrator().HasIndex(&PDEPTokenUsageBucket{}, "idx_pdep_usage_bucket_start"))
+	require.True(t, db.Migrator().HasIndex(&PDEPTokenUsageFlushRecord{}, "idx_pdep_usage_flush_bucket_start"))
 }
 
 func TestPDEPUsageBucketConflictColumns(t *testing.T) {
@@ -212,19 +217,61 @@ func TestAccumulatePDEPUsageBucket_NoopsWhenRedisUnavailableOrInvalid(t *testing
 		common.RDB = previousRDB
 	})
 
-	require.NoError(t, AccumulatePDEPUsageBucket(1, 1, time.Now().Unix(), 1, 1))
-	require.Empty(t, mr.Keys())
-
-	common.RedisEnabled = true
-	common.RDB = nil
-	require.NoError(t, AccumulatePDEPUsageBucket(1, 1, time.Now().Unix(), 1, 1))
-	require.Empty(t, mr.Keys())
-
-	common.RDB = redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	// Still no-op for invalid owner/token.
 	require.NoError(t, AccumulatePDEPUsageBucket(0, 1, time.Now().Unix(), 1, 1))
 	require.Empty(t, mr.Keys())
 	require.NoError(t, AccumulatePDEPUsageBucket(1, 0, time.Now().Unix(), 1, 1))
 	require.Empty(t, mr.Keys())
+}
+
+func TestAccumulatePDEPUsageBucket_FallsBackToDBWhenRedisDisabled(t *testing.T) {
+	_ = setupPDEPUsageBucketDB(t)
+	mr := miniredis.RunT(t)
+
+	previousRedisEnabled := common.RedisEnabled
+	previousRDB := common.RDB
+	t.Cleanup(func() {
+		common.RedisEnabled = previousRedisEnabled
+		common.RDB = previousRDB
+	})
+
+	common.RedisEnabled = false
+	common.RDB = redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	ts := time.Date(2026, 3, 22, 10, 19, 59, 0, time.UTC).Unix()
+	require.NoError(t, AccumulatePDEPUsageBucket(7, 9, ts, 123, 45))
+	require.Empty(t, mr.Keys())
+
+	bucketStart := time.Date(2026, 3, 22, 10, 10, 0, 0, time.UTC).Unix()
+	var row PDEPTokenUsageBucket
+	require.NoError(t, DB.Where("owner_id = ? AND token_id = ? AND bucket_start = ?", 7, 9, bucketStart).First(&row).Error)
+	require.EqualValues(t, 123, row.TokenUsed)
+	require.EqualValues(t, 45, row.QuotaUsed)
+	require.EqualValues(t, 1, row.RequestCount)
+}
+
+func TestAccumulatePDEPUsageBucket_FallsBackToDBWhenRedisClientMissing(t *testing.T) {
+	_ = setupPDEPUsageBucketDB(t)
+
+	previousRedisEnabled := common.RedisEnabled
+	previousRDB := common.RDB
+	t.Cleanup(func() {
+		common.RedisEnabled = previousRedisEnabled
+		common.RDB = previousRDB
+	})
+
+	common.RedisEnabled = true
+	common.RDB = nil
+
+	ts := time.Date(2026, 3, 22, 10, 19, 59, 0, time.UTC).Unix()
+	require.NoError(t, AccumulatePDEPUsageBucket(7, 9, ts, 123, 45))
+
+	bucketStart := time.Date(2026, 3, 22, 10, 10, 0, 0, time.UTC).Unix()
+	var row PDEPTokenUsageBucket
+	require.NoError(t, DB.Where("owner_id = ? AND token_id = ? AND bucket_start = ?", 7, 9, bucketStart).First(&row).Error)
+	require.EqualValues(t, 123, row.TokenUsed)
+	require.EqualValues(t, 45, row.QuotaUsed)
+	require.EqualValues(t, 1, row.RequestCount)
 }
 
 func TestFlushPDEPUsageBuckets_PersistsRedisDeltaToDB(t *testing.T) {
@@ -267,6 +314,75 @@ func TestFlushPDEPUsageBuckets_PersistsRedisDeltaToDB(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, isPending)
 	require.False(t, mr.Exists(processingKey))
+}
+
+func TestFlushPDEPUsageBuckets_DoesNotDoubleApplyReplayedProcessing(t *testing.T) {
+	_ = setupPDEPUsageBucketDB(t)
+	mr := miniredis.RunT(t)
+
+	previousRedisEnabled := common.RedisEnabled
+	previousRDB := common.RDB
+	previousTTL := common.PDEPUsageBucketRedisTTLSeconds
+	previousFlushInterval := common.PDEPUsageBucketFlushIntervalSeconds
+	previousFinalize := pdepUsageFinalizeProcessingFunc
+	t.Cleanup(func() {
+		common.RedisEnabled = previousRedisEnabled
+		common.RDB = previousRDB
+		common.PDEPUsageBucketRedisTTLSeconds = previousTTL
+		common.PDEPUsageBucketFlushIntervalSeconds = previousFlushInterval
+		pdepUsageFinalizeProcessingFunc = previousFinalize
+	})
+
+	common.RedisEnabled = true
+	common.RDB = redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	common.PDEPUsageBucketRedisTTLSeconds = 600
+	common.PDEPUsageBucketFlushIntervalSeconds = 1
+
+	// Fail finalize once: simulate crash window "DB committed but processing not finalized".
+	var finalizeCalls atomic.Int32
+	pdepUsageFinalizeProcessingFunc = func(ctx context.Context, pendingKey, hotKey, processingKey string) error {
+		if finalizeCalls.Add(1) == 1 {
+			return fmt.Errorf("finalize failed")
+		}
+		return previousFinalize(ctx, pendingKey, hotKey, processingKey)
+	}
+
+	ts := time.Date(2026, 3, 22, 10, 19, 59, 0, time.UTC).Unix()
+	require.NoError(t, AccumulatePDEPUsageBucket(7, 9, ts, 123, 45))
+	bucketStart := time.Date(2026, 3, 22, 10, 10, 0, 0, time.UTC).Unix()
+	hotKey := pdepUsageHotKey(bucketStart, 7, 9)
+	processingKey := pdepUsageProcessingKey(bucketStart, 7, 9)
+
+	_, err := FlushPDEPUsageBucketsOnce(context.Background())
+	require.Error(t, err)
+
+	// First run should have already applied to DB.
+	var row PDEPTokenUsageBucket
+	require.NoError(t, DB.Where("owner_id = ? AND token_id = ? AND bucket_start = ?", 7, 9, bucketStart).First(&row).Error)
+	require.EqualValues(t, 123, row.TokenUsed)
+	require.EqualValues(t, 45, row.QuotaUsed)
+	require.EqualValues(t, 1, row.RequestCount)
+
+	// And processing should still exist due to finalize failure.
+	require.True(t, mr.Exists(processingKey))
+	isPending, err := common.RDB.SIsMember(context.Background(), pdepUsagePendingSetKey(), hotKey).Result()
+	require.NoError(t, err)
+	require.True(t, isPending)
+
+	// Replay flush must not double-apply.
+	_, err = FlushPDEPUsageBucketsOnce(context.Background())
+	require.NoError(t, err)
+
+	var row2 PDEPTokenUsageBucket
+	require.NoError(t, DB.Where("owner_id = ? AND token_id = ? AND bucket_start = ?", 7, 9, bucketStart).First(&row2).Error)
+	require.EqualValues(t, 123, row2.TokenUsed)
+	require.EqualValues(t, 45, row2.QuotaUsed)
+	require.EqualValues(t, 1, row2.RequestCount)
+	require.False(t, mr.Exists(processingKey))
+
+	isPending, err = common.RDB.SIsMember(context.Background(), pdepUsagePendingSetKey(), hotKey).Result()
+	require.NoError(t, err)
+	require.False(t, isPending)
 }
 
 func TestFlushPDEPUsageBuckets_RemovesPendingWhenHotKeyMissing(t *testing.T) {
@@ -497,6 +613,57 @@ func TestDeleteExpiredPDEPUsageBuckets_RemovesRowsOlderThanRetention(t *testing.
 	var count int64
 	require.NoError(t, DB.Model(&PDEPTokenUsageBucket{}).Count(&count).Error)
 	require.EqualValues(t, 2, count)
+}
+
+func TestDeleteExpiredPDEPUsageBuckets_RemovesExpiredFlushRecords(t *testing.T) {
+	_ = setupPDEPUsageBucketDB(t)
+	now := time.Date(2026, 3, 22, 12, 0, 0, 0, time.UTC).Unix()
+	retentionDays := 10
+	cutoff := now - int64(retentionDays)*24*3600
+
+	require.NoError(t, DB.Create(&PDEPTokenUsageFlushRecord{
+		FlushToken:  "old-flush",
+		OwnerID:     1,
+		TokenID:     1,
+		BucketStart: cutoff - 600,
+		CreatedAt:   now,
+	}).Error)
+	require.NoError(t, DB.Create(&PDEPTokenUsageFlushRecord{
+		FlushToken:  "new-flush",
+		OwnerID:     1,
+		TokenID:     1,
+		BucketStart: cutoff,
+		CreatedAt:   now,
+	}).Error)
+
+	_, err := DeleteExpiredPDEPUsageBuckets(now, retentionDays)
+	require.NoError(t, err)
+
+	var records []PDEPTokenUsageFlushRecord
+	require.NoError(t, DB.Order("flush_token asc").Find(&records).Error)
+	require.Len(t, records, 1)
+	require.Equal(t, "new-flush", records[0].FlushToken)
+}
+
+func TestPDEPRetentionBatchQueriesUseBucketStartOrdering(t *testing.T) {
+	db := setupPDEPUsageBucketDB(t)
+	cutoff := time.Date(2026, 3, 22, 12, 0, 0, 0, time.UTC).Unix()
+
+	bucketSQL := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		var ids []int
+		return buildPDEPBucketCleanupBatchQuery(tx, cutoff, 100).Pluck("id", &ids)
+	})
+	require.Contains(t, strings.ToLower(bucketSQL), "where bucket_start <")
+	require.Contains(t, strings.ToLower(bucketSQL), "order by bucket_start asc")
+	require.Contains(t, strings.ToLower(bucketSQL), "id asc")
+
+	flushSQL := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		var flushTokens []string
+		return buildPDEPFlushRecordCleanupBatchQuery(tx, cutoff, 100).Pluck("flush_token", &flushTokens)
+	})
+	require.Contains(t, strings.ToLower(flushSQL), "where bucket_start <")
+	require.Contains(t, strings.ToLower(flushSQL), "order by bucket_start asc")
+	require.Contains(t, strings.ToLower(flushSQL), "flush_token asc")
 }
 
 func openMySQLMockDB(t *testing.T) (*gorm.DB, func()) {

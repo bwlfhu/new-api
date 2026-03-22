@@ -304,3 +304,148 @@ func TestPDEPProvider_GetAggregated_RejectsTokenOutsideOwner(t *testing.T) {
 		t.Fatalf("expected ErrPDEPForbiddenToken, got %v", err)
 	}
 }
+
+func TestPDEPProvider_GetAggregated_FallsBackToLogsForMissingBuckets(t *testing.T) {
+	db := setupPDEPProviderModelTestDB(t)
+	ownerToken := seedPDEPProviderToken(t, db, 5401, "owner-token", "abcd1234owner54010000000000000000000000000000")
+
+	start := time.Date(2026, 3, 19, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 3, 19, 0, 30, 0, 0, time.UTC)
+	seedTs := start.Unix()
+
+	// 桶表只种第一桶。
+	if err := db.Create(&PDEPTokenUsageBucket{
+		OwnerID:      5401,
+		TokenID:      ownerToken.Id,
+		BucketStart:  start.Unix(),
+		TokenUsed:    300,
+		QuotaUsed:    120,
+		RequestCount: 2,
+		CreatedAt:    seedTs,
+		UpdatedAt:    seedTs,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed usage bucket: %v", err)
+	}
+
+	// logs 只种第二桶（00:10），作为缺桶兜底来源。
+	if err := db.Create(&Log{
+		UserId:           5401,
+		TokenId:          ownerToken.Id,
+		Type:             LogTypeConsume,
+		Quota:            33,
+		PromptTokens:     7,
+		CompletionTokens: 11,
+		CreatedAt:        start.Add(11 * time.Minute).Unix(),
+	}).Error; err != nil {
+		t.Fatalf("failed to seed consume log for fallback: %v", err)
+	}
+
+	buckets, err := GetPDEPTokenAggregated(5401, fmt.Sprintf("token-%d", ownerToken.Id), start, end)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("expected 2 buckets, got %d", len(buckets))
+	}
+
+	// 第一桶来自桶表。
+	if buckets[0].Timestamp != "2026-03-19T00:00:00Z" ||
+		buckets[0].Usage != 120 ||
+		buckets[0].Refill != 0 ||
+		buckets[0].Net != 120 ||
+		buckets[0].TokenUsed != 300 ||
+		buckets[0].QuotaUsed != 120 ||
+		buckets[0].RequestCount != 2 {
+		t.Fatalf("unexpected first bucket: %+v", buckets[0])
+	}
+
+	// 第二桶来自 logs 聚合：token_used=7+11=18, quota_used=33, request_count=1。
+	if buckets[1].Timestamp != "2026-03-19T00:10:00Z" ||
+		buckets[1].Usage != 33 ||
+		buckets[1].Refill != 0 ||
+		buckets[1].Net != 33 ||
+		buckets[1].TokenUsed != 18 ||
+		buckets[1].QuotaUsed != 33 ||
+		buckets[1].RequestCount != 1 {
+		t.Fatalf("unexpected second bucket: %+v", buckets[1])
+	}
+}
+
+func TestPDEPProvider_GetAggregated_BucketTableWinsOverLogs(t *testing.T) {
+	db := setupPDEPProviderModelTestDB(t)
+	ownerToken := seedPDEPProviderToken(t, db, 5501, "owner-token", "abcd1234owner55010000000000000000000000000000")
+
+	start := time.Date(2026, 3, 19, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 3, 19, 0, 10, 0, 0, time.UTC)
+	seedTs := start.Unix()
+
+	// 同一个 bucket（00:00）同时存在桶表和冲突 logs，必须以桶表为准。
+	if err := db.Create(&PDEPTokenUsageBucket{
+		OwnerID:      5501,
+		TokenID:      ownerToken.Id,
+		BucketStart:  start.Unix(),
+		TokenUsed:    222,
+		QuotaUsed:    111,
+		RequestCount: 3,
+		CreatedAt:    seedTs,
+		UpdatedAt:    seedTs,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed usage bucket: %v", err)
+	}
+	if err := db.Create(&Log{
+		UserId:           5501,
+		TokenId:          ownerToken.Id,
+		Type:             LogTypeConsume,
+		Quota:            9999,
+		PromptTokens:     8888,
+		CompletionTokens: 7777,
+		CreatedAt:        start.Add(60 * time.Second).Unix(),
+	}).Error; err != nil {
+		t.Fatalf("failed to seed conflicting consume log: %v", err)
+	}
+
+	buckets, err := GetPDEPTokenAggregated(5501, fmt.Sprintf("token-%d", ownerToken.Id), start, end)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(buckets) != 1 {
+		t.Fatalf("expected 1 bucket, got %d", len(buckets))
+	}
+	if buckets[0].Timestamp != "2026-03-19T00:00:00Z" ||
+		buckets[0].Usage != 111 ||
+		buckets[0].Refill != 0 ||
+		buckets[0].Net != 111 ||
+		buckets[0].TokenUsed != 222 ||
+		buckets[0].QuotaUsed != 111 ||
+		buckets[0].RequestCount != 3 {
+		t.Fatalf("unexpected bucket: %+v", buckets[0])
+	}
+}
+
+func TestBuildPDEPMissingBucketRanges(t *testing.T) {
+	start := time.Date(2026, 3, 19, 0, 0, 0, 0, time.UTC).Unix()
+	end := time.Date(2026, 3, 19, 0, 40, 0, 0, time.UTC).Unix()
+	present := map[int64]pdepAggregatedRow{
+		start:                   {BucketStart: start},
+		start + 20*60:          {BucketStart: start + 20*60},
+		start + 30*60:          {BucketStart: start + 30*60},
+	}
+
+	ranges := buildPDEPMissingBucketRanges(start, end, present)
+	if len(ranges) != 1 {
+		t.Fatalf("expected 1 missing range, got %d: %+v", len(ranges), ranges)
+	}
+	if ranges[0].Start != start+10*60 || ranges[0].End != start+20*60 {
+		t.Fatalf("unexpected missing range: %+v", ranges[0])
+	}
+
+	emptyRanges := buildPDEPMissingBucketRanges(start, end, map[int64]pdepAggregatedRow{
+		start:          {BucketStart: start},
+		start + 10*60:  {BucketStart: start + 10*60},
+		start + 20*60:  {BucketStart: start + 20*60},
+		start + 30*60:  {BucketStart: start + 30*60},
+	})
+	if len(emptyRanges) != 0 {
+		t.Fatalf("expected no missing ranges, got %+v", emptyRanges)
+	}
+}

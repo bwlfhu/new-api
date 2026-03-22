@@ -683,3 +683,84 @@ func TestPDEPGetTokenAggregated_ReturnsTenMinuteBuckets(t *testing.T) {
 		t.Fatalf("unexpected second bucket: %+v", response.Buckets[1])
 	}
 }
+
+func TestPDEPGetTokenAggregated_FallsBackToLogsWhenBucketMissing(t *testing.T) {
+	db := setupPDEPProviderControllerTestDB(t)
+	seedPDEPProviderOwnerUser(t, db, 6401, common.UserStatusEnabled)
+	token := seedPDEPProviderToken(t, db, 6401, "owner", "abcd1234owner64010000000000000000000000000000", 1710752400)
+	t.Setenv("PDEP_PROVIDER_SECRET", "test-secret")
+	t.Setenv("PDEP_PROVIDER_OWNER_USER_ID", "6401")
+
+	start := time.Date(2026, 3, 19, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 3, 19, 0, 30, 0, 0, time.UTC)
+	seedTs := start.Unix()
+
+	// 桶表只种第一桶（00:00）。
+	if err := db.Create(&model.PDEPTokenUsageBucket{
+		OwnerID:      6401,
+		TokenID:      token.Id,
+		BucketStart:  start.Unix(),
+		TokenUsed:    250,
+		QuotaUsed:    100,
+		RequestCount: 2,
+		CreatedAt:    seedTs,
+		UpdatedAt:    seedTs,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed usage bucket 1: %v", err)
+	}
+
+	// logs 种第二桶（00:10），作为缺桶兜底来源。
+	if err := db.Create(&model.Log{
+		UserId:           6401,
+		TokenId:          token.Id,
+		Type:             model.LogTypeConsume,
+		Quota:            33,
+		PromptTokens:     7,
+		CompletionTokens: 11,
+		CreatedAt:        start.Add(11 * time.Minute).Unix(),
+	}).Error; err != nil {
+		t.Fatalf("failed to seed consume log for fallback: %v", err)
+	}
+
+	engine := newPDEPProviderTestRouter()
+	path := fmt.Sprintf(
+		"/api/pdep/v1/tokens/aggregated?sourceId=token-%d&startTime=%s&endTime=%s",
+		token.Id,
+		url.QueryEscape(start.Format(time.RFC3339)),
+		url.QueryEscape(end.Format(time.RFC3339)),
+	)
+	recorder := doPDEPProviderRequest(t, engine, http.MethodGet, path, nil, "test-secret")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+
+	var response pdepAggregatedResponse
+	if err := common.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to decode aggregated response: %v", err)
+	}
+	if len(response.Buckets) != 2 {
+		t.Fatalf("expected 2 buckets, got %d", len(response.Buckets))
+	}
+
+	// 第一桶来自桶表。
+	if response.Buckets[0].Timestamp != "2026-03-19T00:00:00Z" ||
+		response.Buckets[0].Usage != 100 ||
+		response.Buckets[0].Refill != 0 ||
+		response.Buckets[0].Net != 100 ||
+		response.Buckets[0].TokenUsed != 250 ||
+		response.Buckets[0].QuotaUsed != 100 ||
+		response.Buckets[0].RequestCount != 2 {
+		t.Fatalf("unexpected first bucket: %+v", response.Buckets[0])
+	}
+
+	// 第二桶来自 logs 聚合：token_used=7+11=18, quota_used=33, request_count=1。
+	if response.Buckets[1].Timestamp != "2026-03-19T00:10:00Z" ||
+		response.Buckets[1].Usage != 33 ||
+		response.Buckets[1].Refill != 0 ||
+		response.Buckets[1].Net != 33 ||
+		response.Buckets[1].TokenUsed != 18 ||
+		response.Buckets[1].QuotaUsed != 33 ||
+		response.Buckets[1].RequestCount != 1 {
+		t.Fatalf("unexpected second bucket: %+v", response.Buckets[1])
+	}
+}

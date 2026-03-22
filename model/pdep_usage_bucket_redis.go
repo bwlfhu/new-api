@@ -2,6 +2,8 @@ package model
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/go-redis/redis/v8"
+	"gorm.io/gorm"
 )
 
 func pdepUsagePendingSetKey() string {
@@ -142,19 +145,29 @@ return 1
 	return err
 }
 
+var pdepUsageFinalizeProcessingFunc = finalizePDEPUsageProcessing
+
 // AccumulatePDEPUsageBucket writes per-owner/token usage deltas to Redis for the 10-minute bucket
 // and registers the hot key in the pending set for later background processing.
 func AccumulatePDEPUsageBucket(ownerID, tokenID int, createdAt int64, tokenUsed int, quotaUsed int) error {
 	if ownerID <= 0 || tokenID <= 0 {
 		return nil
 	}
-	if !common.RedisEnabled || common.RDB == nil {
-		return nil
-	}
 	if createdAt <= 0 {
 		createdAt = common.GetTimestamp()
 	}
 	bucketStart := pdepUsageBucketStart(createdAt)
+	if !common.RedisEnabled || common.RDB == nil {
+		// Redis disabled or missing: fallback to DB to avoid permanent missing buckets.
+		return upsertPDEPUsageBucket(PDEPTokenUsageBucket{
+			OwnerID:      ownerID,
+			TokenID:      tokenID,
+			BucketStart:  bucketStart,
+			TokenUsed:    int64(tokenUsed),
+			QuotaUsed:    int64(quotaUsed),
+			RequestCount: 1,
+		})
+	}
 	key := pdepUsageHotKey(bucketStart, ownerID, tokenID)
 	ctx := context.Background()
 	pipe := common.RDB.TxPipeline()
@@ -169,6 +182,14 @@ func AccumulatePDEPUsageBucket(ownerID, tokenID int, createdAt int64, tokenUsed 
 	}
 	_, err := pipe.Exec(ctx)
 	return err
+}
+
+func newPDEPUsageFlushToken() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // FlushPDEPUsageBucketsOnce drains pending Redis usage bucket hashes into DB rows.
@@ -336,22 +357,63 @@ func FlushPDEPUsageBucketsOnce(ctx context.Context) (int64, error) {
 				if err := ensurePDEPFlushLock(ctx, lockKey, lockVal, lockTTL, &lockLost); err != nil {
 					return flushed, err
 				}
-				if err := finalizePDEPUsageProcessing(ctx, pendingKey, hotKey, processingKey); err != nil {
+				if err := pdepUsageFinalizeProcessingFunc(ctx, pendingKey, hotKey, processingKey); err != nil {
 					return flushed, err
 				}
 				continue
 			}
 
+			flushToken := values["flush_token"]
+			if flushToken == "" {
+				candidate, err := newPDEPUsageFlushToken()
+				if err != nil {
+					return flushed, err
+				}
+				// Persist flush_token before applying to DB, so replay can dedupe by the same token.
+				set, err := common.RDB.HSetNX(ctx, processingKey, "flush_token", candidate).Result()
+				if err != nil {
+					return flushed, err
+				}
+				if set {
+					flushToken = candidate
+				} else {
+					flushToken, err = common.RDB.HGet(ctx, processingKey, "flush_token").Result()
+					if err != nil {
+						return flushed, err
+					}
+				}
+			}
+
 			if err := ensurePDEPFlushLock(ctx, lockKey, lockVal, lockTTL, &lockLost); err != nil {
 				return flushed, err
 			}
-			err = upsertPDEPUsageBucket(PDEPTokenUsageBucket{
-				OwnerID:      ownerID,
-				TokenID:      tokenID,
-				BucketStart:  bucketStart,
-				TokenUsed:    tokenUsed,
-				QuotaUsed:    quotaUsed,
-				RequestCount: requestCount,
+			var applied bool
+			err = DB.Transaction(func(tx *gorm.DB) error {
+				rec := &PDEPTokenUsageFlushRecord{
+					FlushToken:  flushToken,
+					OwnerID:     ownerID,
+					TokenID:     tokenID,
+					BucketStart: bucketStart,
+					CreatedAt:   time.Now().Unix(),
+				}
+				inserted, err := tryInsertPDEPUsageFlushRecord(tx, rec)
+				if err != nil {
+					return err
+				}
+				if !inserted {
+					// Already applied: skip upsert, but still finalize Redis processing state.
+					applied = false
+					return nil
+				}
+				applied = true
+				return upsertPDEPUsageBucketWithDB(tx, PDEPTokenUsageBucket{
+					OwnerID:      ownerID,
+					TokenID:      tokenID,
+					BucketStart:  bucketStart,
+					TokenUsed:    tokenUsed,
+					QuotaUsed:    quotaUsed,
+					RequestCount: requestCount,
+				})
 			})
 			if err != nil {
 				// DB error must not be swallowed; leave processing+pending for retry.
@@ -360,10 +422,12 @@ func FlushPDEPUsageBucketsOnce(ctx context.Context) (int64, error) {
 			if err := ensurePDEPFlushLock(ctx, lockKey, lockVal, lockTTL, &lockLost); err != nil {
 				return flushed, err
 			}
-			if err := finalizePDEPUsageProcessing(ctx, pendingKey, hotKey, processingKey); err != nil {
+			if err := pdepUsageFinalizeProcessingFunc(ctx, pendingKey, hotKey, processingKey); err != nil {
 				return flushed, err
 			}
-			flushed++
+			if applied {
+				flushed++
+			}
 		}
 
 		cursor = next
@@ -384,8 +448,60 @@ func DeleteExpiredPDEPUsageBuckets(nowUnix int64, retentionDays int) (int64, err
 		nowUnix = time.Now().Unix()
 	}
 	cutoff := nowUnix - int64(retentionDays)*24*3600
-	res := DB.Where("bucket_start < ?", cutoff).Delete(&PDEPTokenUsageBucket{})
-	return res.RowsAffected, res.Error
+	const batchSize = 1000
+	var totalDeleted int64
+	for {
+		var ids []int
+		if err := buildPDEPBucketCleanupBatchQuery(DB, cutoff, batchSize).
+			Pluck("id", &ids).Error; err != nil {
+			return totalDeleted, err
+		}
+		if len(ids) == 0 {
+			break
+		}
+		res := DB.Where("id IN ?", ids).Delete(&PDEPTokenUsageBucket{})
+		if res.Error != nil {
+			return totalDeleted, res.Error
+		}
+		totalDeleted += res.RowsAffected
+		if len(ids) < batchSize {
+			break
+		}
+	}
+	for {
+		var flushTokens []string
+		if err := buildPDEPFlushRecordCleanupBatchQuery(DB, cutoff, batchSize).
+			Pluck("flush_token", &flushTokens).Error; err != nil {
+			return totalDeleted, err
+		}
+		if len(flushTokens) == 0 {
+			break
+		}
+		res := DB.Where("flush_token IN ?", flushTokens).Delete(&PDEPTokenUsageFlushRecord{})
+		if res.Error != nil {
+			return totalDeleted, res.Error
+		}
+		if len(flushTokens) < batchSize {
+			break
+		}
+	}
+	return totalDeleted, nil
+}
+
+func buildPDEPBucketCleanupBatchQuery(db *gorm.DB, cutoff int64, batchSize int) *gorm.DB {
+	return db.Model(&PDEPTokenUsageBucket{}).
+		Where("bucket_start < ?", cutoff).
+		Order("bucket_start asc").
+		Order("id asc").
+		Limit(batchSize)
+}
+
+func buildPDEPFlushRecordCleanupBatchQuery(db *gorm.DB, cutoff int64, batchSize int) *gorm.DB {
+	return db.Model(&PDEPTokenUsageFlushRecord{}).
+		Where("bucket_start < ?", cutoff).
+		Order("bucket_start asc").
+		Order("flush_token asc").
+		Limit(batchSize)
 }
 
 func StartPDEPUsageBucketFlushTask() {

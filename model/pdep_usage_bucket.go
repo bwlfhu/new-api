@@ -3,6 +3,7 @@ package model
 import (
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -11,7 +12,7 @@ type PDEPTokenUsageBucket struct {
 	ID           int   `json:"id"`
 	OwnerID      int   `json:"owner_id" gorm:"not null;index:idx_pdep_usage_owner_bucket,priority:1;index:idx_pdep_usage_owner_token_bucket,priority:1"`
 	TokenID      int   `json:"token_id" gorm:"not null;index:idx_pdep_usage_token_bucket,priority:1;index:idx_pdep_usage_owner_token_bucket,priority:2"`
-	BucketStart  int64 `json:"bucket_start" gorm:"not null;bigint;index:idx_pdep_usage_token_bucket,priority:2;index:idx_pdep_usage_owner_bucket,priority:2;uniqueIndex:idx_pdep_usage_owner_token_bucket,priority:3"`
+	BucketStart  int64 `json:"bucket_start" gorm:"not null;bigint;index:idx_pdep_usage_bucket_start;index:idx_pdep_usage_token_bucket,priority:2;index:idx_pdep_usage_owner_bucket,priority:2;uniqueIndex:idx_pdep_usage_owner_token_bucket,priority:3"`
 	TokenUsed    int64 `json:"token_used" gorm:"not null;default:0"`
 	QuotaUsed    int64 `json:"quota_used" gorm:"not null;default:0"`
 	RequestCount int64 `json:"request_count" gorm:"not null;default:0"`
@@ -23,13 +24,31 @@ func (PDEPTokenUsageBucket) TableName() string {
 	return "pdep_token_usage_bucket"
 }
 
+// PDEPTokenUsageFlushRecord marks a processing delta as already applied to DB.
+// It enables idempotent flush when Redis finalize fails and processing is replayed.
+type PDEPTokenUsageFlushRecord struct {
+	FlushToken  string `json:"flush_token" gorm:"primaryKey;type:varchar(64)"`
+	OwnerID     int    `json:"owner_id" gorm:"not null;index:idx_pdep_usage_flush_owner_token_bucket,priority:1"`
+	TokenID     int    `json:"token_id" gorm:"not null;index:idx_pdep_usage_flush_owner_token_bucket,priority:2"`
+	BucketStart int64  `json:"bucket_start" gorm:"not null;bigint;index:idx_pdep_usage_flush_bucket_start;index:idx_pdep_usage_flush_owner_token_bucket,priority:3"`
+	CreatedAt   int64  `json:"created_at" gorm:"bigint;not null"`
+}
+
+func (PDEPTokenUsageFlushRecord) TableName() string {
+	return "pdep_token_usage_flush_record"
+}
+
 func pdepUsageBucketStart(ts int64) int64 {
 	return ts - (ts % 600)
 }
 
 func upsertPDEPUsageBucket(delta PDEPTokenUsageBucket) error {
+	return upsertPDEPUsageBucketWithDB(DB, delta)
+}
+
+func upsertPDEPUsageBucketWithDB(db *gorm.DB, delta PDEPTokenUsageBucket) error {
 	preparePDEPUsageBucketDelta(&delta)
-	return DB.Clauses(clause.OnConflict{
+	return db.Clauses(clause.OnConflict{
 		Columns: pdepUsageBucketConflictColumns(),
 		DoUpdates: clause.Assignments(map[string]interface{}{
 			"token_used":    gorm.Expr("token_used + ?", delta.TokenUsed),
@@ -59,6 +78,19 @@ func preparePDEPUsageBucketDelta(delta *PDEPTokenUsageBucket) {
 		delta.CreatedAt = now
 	}
 	delta.UpdatedAt = now
+}
+
+func tryInsertPDEPUsageFlushRecord(tx *gorm.DB, rec *PDEPTokenUsageFlushRecord) (bool, error) {
+	if rec == nil {
+		return false, nil
+	}
+	if common.UsingMySQL {
+		// MySQL: use INSERT IGNORE for stable RowsAffected semantics.
+		res := tx.Clauses(clause.Insert{Modifier: "IGNORE"}).Create(rec)
+		return res.RowsAffected > 0, res.Error
+	}
+	res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(rec)
+	return res.RowsAffected > 0, res.Error
 }
 
 func buildPDEPUsageBucketUpsertSQL(db *gorm.DB, delta PDEPTokenUsageBucket) (string, []interface{}, error) {
