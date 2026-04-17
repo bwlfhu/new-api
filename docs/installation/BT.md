@@ -1,5 +1,4 @@
 # 宝塔面板部署教程
-
 本文档提供使用宝塔面板 Docker 功能部署 New API 的图文教程。
 
 > 📖 官方文档：[宝塔面板部署](https://docs.newapi.pro/zh/docs/installation/deployment-methods/bt-docker-installation)
