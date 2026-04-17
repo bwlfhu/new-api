@@ -4,7 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFormatClaudeResponseInfo_MessageStart(t *testing.T) {
@@ -172,4 +175,64 @@ func TestFormatClaudeResponseInfo_ContentBlockDelta(t *testing.T) {
 	if claudeInfo.ResponseText.String() != "hello" {
 		t.Errorf("ResponseText = %q, want %q", claudeInfo.ResponseText.String(), "hello")
 	}
+}
+
+func TestRequestOpenAI2ClaudeMessage_Opus47EffortSuffixUsesSummarizedAdaptiveThinking(t *testing.T) {
+	temp := 0.7
+	topP := 0.8
+	topK := 9
+	maxTokens := uint(2048)
+
+	claudeRequest, err := RequestOpenAI2ClaudeMessage(nil, dto.GeneralOpenAIRequest{
+		Model:       "claude-opus-4-7-xhigh",
+		Temperature: &temp,
+		TopP:        &topP,
+		TopK:        &topK,
+		MaxTokens:   &maxTokens,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "claude-opus-4-7", claudeRequest.Model)
+	require.NotNil(t, claudeRequest.Thinking)
+	require.Equal(t, "adaptive", claudeRequest.Thinking.Type)
+	require.Equal(t, "summarized", claudeRequest.Thinking.Display)
+	require.Nil(t, claudeRequest.Temperature)
+	require.Nil(t, claudeRequest.TopP)
+	require.Nil(t, claudeRequest.TopK)
+
+	var outputConfig map[string]string
+	require.NoError(t, common.Unmarshal(claudeRequest.OutputConfig, &outputConfig))
+	require.Equal(t, "xhigh", outputConfig["effort"])
+}
+
+func TestRequestOpenAI2ClaudeMessage_Opus47ThinkingUsesSummarizedAdaptiveThinking(t *testing.T) {
+	original := model_setting.GetClaudeSettings().ThinkingAdapterEnabled
+	t.Cleanup(func() {
+		model_setting.GetClaudeSettings().ThinkingAdapterEnabled = original
+	})
+	model_setting.GetClaudeSettings().ThinkingAdapterEnabled = true
+
+	temp := 0.7
+	topP := 0.8
+	topK := 9
+	maxTokens := uint(2048)
+
+	claudeRequest, err := RequestOpenAI2ClaudeMessage(nil, dto.GeneralOpenAIRequest{
+		Model:       "claude-opus-4-7-thinking",
+		Temperature: &temp,
+		TopP:        &topP,
+		TopK:        &topK,
+		MaxTokens:   &maxTokens,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "claude-opus-4-7", claudeRequest.Model)
+	require.NotNil(t, claudeRequest.Thinking)
+	require.Equal(t, "adaptive", claudeRequest.Thinking.Type)
+	require.Equal(t, "summarized", claudeRequest.Thinking.Display)
+	require.Nil(t, claudeRequest.Temperature)
+	require.Nil(t, claudeRequest.TopP)
+	require.Nil(t, claudeRequest.TopK)
+
+	var outputConfig map[string]string
+	require.NoError(t, common.Unmarshal(claudeRequest.OutputConfig, &outputConfig))
+	require.Equal(t, "high", outputConfig["effort"])
 }
