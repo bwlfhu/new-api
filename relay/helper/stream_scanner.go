@@ -34,10 +34,16 @@ func getScannerBufferSize() int {
 	return DefaultMaxScannerBufferSize
 }
 
-func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string) bool) {
+func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string) bool) (streamErr error) {
 
 	if resp == nil || dataHandler == nil {
-		return
+		return nil
+	}
+
+	setStreamErr := func(err error) {
+		if err != nil && streamErr == nil {
+			streamErr = err
+		}
 	}
 
 	// 确保响应体总是被关闭
@@ -264,6 +270,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		if err := scanner.Err(); err != nil {
 			if err != io.EOF {
 				logger.LogError(c, "scanner error: "+err.Error())
+				setStreamErr(err)
 			}
 		}
 	})
@@ -273,6 +280,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	case <-ticker.C:
 		// 超时处理逻辑
 		logger.LogError(c, "streaming timeout")
+		setStreamErr(fmt.Errorf("streaming timeout"))
 	case <-stopChan:
 		// 正常结束
 		logger.LogInfo(c, "streaming finished")
@@ -280,4 +288,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		// 客户端断开连接
 		logger.LogInfo(c, "client disconnected")
 	}
+
+	return streamErr
 }

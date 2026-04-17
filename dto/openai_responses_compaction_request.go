@@ -14,6 +14,7 @@ type OpenAIResponsesCompactionRequest struct {
 	Input              json.RawMessage `json:"input,omitempty"`
 	Instructions       json.RawMessage `json:"instructions,omitempty"`
 	PreviousResponseID string          `json:"previous_response_id,omitempty"`
+	Stream             *bool           `json:"stream,omitempty"`
 }
 
 func (r *OpenAIResponsesCompactionRequest) GetTokenCountMeta() *types.TokenCountMeta {
@@ -30,6 +31,8 @@ func (r *OpenAIResponsesCompactionRequest) GetTokenCountMeta() *types.TokenCount
 }
 
 func (r *OpenAIResponsesCompactionRequest) IsStream(c *gin.Context) bool {
+	// Responses compaction is still handled as a JSON response locally even when
+	// some upstreams require `"stream": true` in the request payload.
 	return false
 }
 

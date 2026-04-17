@@ -71,3 +71,21 @@ func TestOpenAIResponsesRequestPreserveExplicitZeroValues(t *testing.T) {
 	require.True(t, gjson.GetBytes(encoded, "stream").Exists())
 	require.True(t, gjson.GetBytes(encoded, "top_p").Exists())
 }
+
+func TestOpenAIResponsesCompactionRequestPreserveExplicitStreamValue(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.4-openai-compact",
+		"input":[{"role":"user","content":"hi"}],
+		"stream":true
+	}`)
+
+	var req OpenAIResponsesCompactionRequest
+	err := common.Unmarshal(raw, &req)
+	require.NoError(t, err)
+
+	encoded, err := common.Marshal(req)
+	require.NoError(t, err)
+
+	require.True(t, gjson.GetBytes(encoded, "stream").Exists())
+	require.True(t, gjson.GetBytes(encoded, "stream").Bool())
+}

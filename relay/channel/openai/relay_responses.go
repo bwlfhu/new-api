@@ -84,7 +84,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	requestID := c.GetString(common.RequestIdKey)
 	logger.LogInfo(c, fmt.Sprintf("responses stream begin: request_id=%s model=%s channel_id=%d channel_type=%d is_stream=%v relay_mode=%d", requestID, info.UpstreamModelName, info.ChannelId, info.ChannelType, info.IsStream, info.RelayMode))
 
-	helper.StreamScannerHandler(c, resp, info, func(data string) bool {
+	scanErr := helper.StreamScannerHandler(c, resp, info, func(data string) bool {
 
 		// 检查当前数据是否包含 completed 状态和 usage 信息
 		var streamResponse dto.ResponsesStreamResponse
@@ -152,6 +152,14 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 		return true
 	})
+
+	if streamErr == nil && scanErr != nil && !sawCompleted {
+		streamErr = types.NewOpenAIError(
+			fmt.Errorf("responses stream ended before response.completed: %w", scanErr),
+			types.ErrorCodeReadResponseBodyFailed,
+			http.StatusInternalServerError,
+		)
+	}
 
 	if streamErr != nil {
 		logger.LogInfo(c, fmt.Sprintf("responses stream return-error: request_id=%s wrote_any=%v saw_completed=%v err=%s", requestID, streamStarted || c.Writer.Written(), sawCompleted, streamErr.Error()))

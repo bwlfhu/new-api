@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,22 @@ import (
 
 func init() {
 	gin.SetMode(gin.TestMode)
+}
+
+type errorAfterReader struct {
+	reader *strings.Reader
+	err    error
+}
+
+func (r *errorAfterReader) Read(p []byte) (int, error) {
+	if r.reader.Len() == 0 {
+		return 0, r.err
+	}
+	n, readErr := r.reader.Read(p)
+	if readErr == io.EOF {
+		return n, r.err
+	}
+	return n, readErr
 }
 
 func newResponsesStreamTestContext(body string) (*gin.Context, *httptest.ResponseRecorder, *relaycommon.RelayInfo, *http.Response) {
@@ -49,6 +66,29 @@ func TestOaiResponsesStreamHandler_ReturnsErrorBeforeFirstWrite(t *testing.T) {
 	require.NotNil(t, streamErr)
 	require.Equal(t, http.StatusInternalServerError, streamErr.StatusCode)
 	require.Zero(t, recorder.Body.Len())
+}
+
+func TestOaiResponsesStreamHandler_ReturnsErrorWhenScannerFailsBeforeCompleted(t *testing.T) {
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	defer func() { constant.StreamingTimeout = oldTimeout }()
+
+	body := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n"
+	c, recorder, info, _ := newResponsesStreamTestContext("")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(&errorAfterReader{
+			reader: strings.NewReader(body),
+			err:    errors.New("upstream stream dropped"),
+		}),
+	}
+
+	usage, streamErr := OaiResponsesStreamHandler(c, info, resp)
+	require.Nil(t, usage)
+	require.NotNil(t, streamErr)
+	require.Equal(t, http.StatusInternalServerError, streamErr.StatusCode)
+	require.Contains(t, streamErr.Error(), "upstream stream dropped")
+	require.Contains(t, recorder.Body.String(), "\"type\":\"response.output_text.delta\"")
 }
 
 func TestOaiResponsesToChatStreamHandler_ReturnsErrorBeforeFirstWrite(t *testing.T) {
