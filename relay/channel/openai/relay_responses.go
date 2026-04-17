@@ -83,74 +83,77 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	sawCompleted := false
 	requestID := c.GetString(common.RequestIdKey)
 	logger.LogInfo(c, fmt.Sprintf("responses stream begin: request_id=%s model=%s channel_id=%d channel_type=%d is_stream=%v relay_mode=%d", requestID, info.UpstreamModelName, info.ChannelId, info.ChannelType, info.IsStream, info.RelayMode))
-
-	scanErr := helper.StreamScannerHandler(c, resp, info, func(data string) bool {
-
-		// 检查当前数据是否包含 completed 状态和 usage 信息
+	scanErr := helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		var streamResponse dto.ResponsesStreamResponse
-		if err := common.UnmarshalJsonStr(data, &streamResponse); err == nil {
-			if streamResponse.Type == "response.error" || streamResponse.Type == "response.failed" {
-				logger.LogInfo(c, fmt.Sprintf("responses stream event-error: request_id=%s type=%s stream_started=%v writer_written=%v", requestID, streamResponse.Type, streamStarted, c.Writer.Written()))
-				if !streamStarted && !c.Writer.Written() {
-					if streamResponse.Response != nil {
-						if oaiErr := streamResponse.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
-							streamErr = types.WithOpenAIError(*oaiErr, http.StatusInternalServerError)
-							return false
-						}
-					}
-					streamErr = types.NewOpenAIError(fmt.Errorf("responses stream error: %s", streamResponse.Type), types.ErrorCodeBadResponse, http.StatusInternalServerError)
-					return false
+		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
+			logger.LogError(c, "failed to unmarshal stream response: "+err.Error())
+			sr.Error(err)
+			return
+		}
+
+		switch streamResponse.Type {
+		case "response.error", "response.failed":
+			logger.LogInfo(c, fmt.Sprintf("responses stream event-error: request_id=%s type=%s stream_started=%v writer_written=%v", requestID, streamResponse.Type, streamStarted, c.Writer.Written()))
+			var eventErr *types.NewAPIError
+			if streamResponse.Response != nil {
+				if oaiErr := streamResponse.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
+					eventErr = types.WithOpenAIError(*oaiErr, http.StatusInternalServerError)
 				}
-				return false
+			}
+			if eventErr == nil {
+				eventErr = types.NewOpenAIError(fmt.Errorf("responses stream error: %s", streamResponse.Type), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			}
+			if !streamStarted && !c.Writer.Written() {
+				streamErr = eventErr
+			}
+			sr.Stop(eventErr)
+			return
+		}
+
+		sendResponsesStreamData(c, streamResponse, data)
+		streamStarted = streamStarted || c.Writer.Written()
+
+		switch streamResponse.Type {
+		case "response.completed":
+			sawCompleted = true
+			logger.LogInfo(c, fmt.Sprintf("responses stream completed: request_id=%s", requestID))
+			if streamResponse.Response != nil {
+				if streamResponse.Response.Usage != nil {
+					if streamResponse.Response.Usage.InputTokens != 0 {
+						usage.PromptTokens = streamResponse.Response.Usage.InputTokens
+					}
+					if streamResponse.Response.Usage.OutputTokens != 0 {
+						usage.CompletionTokens = streamResponse.Response.Usage.OutputTokens
+					}
+					if streamResponse.Response.Usage.TotalTokens != 0 {
+						usage.TotalTokens = streamResponse.Response.Usage.TotalTokens
+					}
+					if streamResponse.Response.Usage.InputTokensDetails != nil {
+						usage.PromptTokensDetails.CachedTokens = streamResponse.Response.Usage.InputTokensDetails.CachedTokens
+					}
+				}
+				if streamResponse.Response.HasImageGenerationCall() {
+					c.Set("image_generation_call", true)
+					c.Set("image_generation_call_quality", streamResponse.Response.GetQuality())
+					c.Set("image_generation_call_size", streamResponse.Response.GetSize())
+				}
 			}
 
-			sendResponsesStreamData(c, streamResponse, data)
-			streamStarted = streamStarted || c.Writer.Written()
-			switch streamResponse.Type {
-			case "response.completed":
-				sawCompleted = true
-				logger.LogInfo(c, fmt.Sprintf("responses stream completed: request_id=%s", requestID))
-				if streamResponse.Response != nil {
-					if streamResponse.Response.Usage != nil {
-						if streamResponse.Response.Usage.InputTokens != 0 {
-							usage.PromptTokens = streamResponse.Response.Usage.InputTokens
-						}
-						if streamResponse.Response.Usage.OutputTokens != 0 {
-							usage.CompletionTokens = streamResponse.Response.Usage.OutputTokens
-						}
-						if streamResponse.Response.Usage.TotalTokens != 0 {
-							usage.TotalTokens = streamResponse.Response.Usage.TotalTokens
-						}
-						if streamResponse.Response.Usage.InputTokensDetails != nil {
-							usage.PromptTokensDetails.CachedTokens = streamResponse.Response.Usage.InputTokensDetails.CachedTokens
-						}
-					}
-					if streamResponse.Response.HasImageGenerationCall() {
-						c.Set("image_generation_call", true)
-						c.Set("image_generation_call_quality", streamResponse.Response.GetQuality())
-						c.Set("image_generation_call_size", streamResponse.Response.GetSize())
-					}
-				}
-			case "response.output_text.delta":
-				// 处理输出文本
-				responseTextBuilder.WriteString(streamResponse.Delta)
-			case dto.ResponsesOutputTypeItemDone:
-				// 函数调用处理
-				if streamResponse.Item != nil {
-					switch streamResponse.Item.Type {
-					case dto.BuildInCallWebSearchCall:
-						if info != nil && info.ResponsesUsageInfo != nil && info.ResponsesUsageInfo.BuiltInTools != nil {
-							if webSearchTool, exists := info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolWebSearchPreview]; exists && webSearchTool != nil {
-								webSearchTool.CallCount++
-							}
+		case "response.output_text.delta":
+			responseTextBuilder.WriteString(streamResponse.Delta)
+
+		case dto.ResponsesOutputTypeItemDone:
+			if streamResponse.Item != nil {
+				switch streamResponse.Item.Type {
+				case dto.BuildInCallWebSearchCall:
+					if info != nil && info.ResponsesUsageInfo != nil && info.ResponsesUsageInfo.BuiltInTools != nil {
+						if webSearchTool, exists := info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolWebSearchPreview]; exists && webSearchTool != nil {
+							webSearchTool.CallCount++
 						}
 					}
 				}
 			}
-		} else {
-			logger.LogError(c, "failed to unmarshal stream response: "+err.Error())
 		}
-		return true
 	})
 
 	if streamErr == nil && scanErr != nil && !sawCompleted {
