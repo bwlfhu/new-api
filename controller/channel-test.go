@@ -893,7 +893,6 @@ func testAllChannels(notify bool) error {
 			isChannelEnabled := channel.Status == common.ChannelStatusEnabled
 			testModel, endpointType, isStream := resolveAutoChannelTestArgs(channel)
 			tik := time.Now()
-<<<<<<< HEAD
 			result := testChannel(channel, testModel, endpointType, isStream)
 			tok := time.Now()
 			milliseconds := tok.Sub(tik).Milliseconds()
