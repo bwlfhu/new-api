@@ -3935,7 +3935,6 @@ const EditChannelModal = (props) => {
                     </div>
                   </div>
                 )}
-              </div>
             </Spin>
 
             {/* Desktop: Advanced Settings Side Panel - rendered inside Form tree */}
