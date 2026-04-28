@@ -2,14 +2,17 @@ package relay
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	appconstant "github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -97,6 +100,10 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 			}
 		}
 
+		if info.RelayMode == relayconstant.RelayModeResponsesCompact {
+			logResponsesCompactionRequestSummary(c, jsonData)
+		}
+
 		if common.DebugEnabled {
 			println("requestBody: ", string(jsonData))
 		}
@@ -153,4 +160,40 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		service.PostTextConsumeQuota(c, info, usageDto, nil)
 	}
 	return nil
+}
+
+func logResponsesCompactionRequestSummary(c *gin.Context, jsonData []byte) {
+	var payload map[string]json.RawMessage
+	if err := common.Unmarshal(jsonData, &payload); err != nil {
+		logger.LogWarn(c, "responses compact request summary: failed to parse converted request: "+err.Error())
+		return
+	}
+
+	keys := make([]string, 0, len(payload))
+	for key := range payload {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	inputCount := -1
+	if rawInput, ok := payload["input"]; ok {
+		var inputItems []json.RawMessage
+		if err := common.Unmarshal(rawInput, &inputItems); err == nil {
+			inputCount = len(inputItems)
+		}
+	}
+
+	logger.LogInfo(c, fmt.Sprintf(
+		"responses compact request summary: body_bytes=%d keys=%s input_count=%d has_include=%v has_tools=%v has_reasoning=%v has_context_management=%v has_prompt_cache_key=%v has_store=%v has_stream=%v",
+		len(jsonData),
+		strings.Join(keys, ","),
+		inputCount,
+		payload["include"] != nil,
+		payload["tools"] != nil,
+		payload["reasoning"] != nil,
+		payload["context_management"] != nil,
+		payload["prompt_cache_key"] != nil,
+		payload["store"] != nil,
+		payload["stream"] != nil,
+	))
 }

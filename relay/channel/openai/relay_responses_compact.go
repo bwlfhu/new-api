@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
 
@@ -36,6 +37,7 @@ func OaiResponsesCompactionHandler(c *gin.Context, resp *http.Response) (*dto.Us
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
+	logResponsesCompactionSummary(c, "json", len(responseBody), compactResp.Output, compactResp.Usage)
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	usage := dto.Usage{}
@@ -122,6 +124,7 @@ func handleResponsesCompactionStreamBody(c *gin.Context, responseBody []byte) (*
 		return nil, types.NewOpenAIError(fmt.Errorf("responses compact stream missing completed event"), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 
+	logResponsesCompactionSummary(c, "stream", len(responseBody), finalResp.Output, finalResp.Usage)
 	jsonData, err := common.Marshal(finalResp)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
@@ -129,4 +132,52 @@ func handleResponsesCompactionStreamBody(c *gin.Context, responseBody []byte) (*
 	c.Header("Content-Type", "application/json")
 	service.IOCopyBytesGracefully(c, nil, jsonData)
 	return usage, nil
+}
+
+func logResponsesCompactionSummary(c *gin.Context, mode string, bodyBytes int, output json.RawMessage, usage *dto.Usage) {
+	type outputItem struct {
+		Type string `json:"type"`
+	}
+
+	outputCount := 0
+	outputTypes := make([]string, 0)
+	encryptedItemCount := 0
+	if len(output) > 0 {
+		var items []map[string]json.RawMessage
+		if err := common.Unmarshal(output, &items); err == nil {
+			outputCount = len(items)
+			for _, item := range items {
+				if rawType, ok := item["type"]; ok {
+					var out outputItem
+					if err := common.Unmarshal(rawType, &out.Type); err == nil && out.Type != "" {
+						outputTypes = append(outputTypes, out.Type)
+					}
+				}
+				if _, ok := item["encrypted_content"]; ok {
+					encryptedItemCount++
+				}
+			}
+		}
+	}
+
+	usageTotal := 0
+	inputTokens := 0
+	outputTokens := 0
+	if usage != nil {
+		usageTotal = usage.TotalTokens
+		inputTokens = usage.InputTokens
+		outputTokens = usage.OutputTokens
+	}
+
+	logger.LogInfo(c, fmt.Sprintf(
+		"responses compact summary: mode=%s body_bytes=%d output_count=%d output_types=%s encrypted_item_count=%d input_tokens=%d output_tokens=%d total_tokens=%d",
+		mode,
+		bodyBytes,
+		outputCount,
+		strings.Join(outputTypes, ","),
+		encryptedItemCount,
+		inputTokens,
+		outputTokens,
+		usageTotal,
+	))
 }
