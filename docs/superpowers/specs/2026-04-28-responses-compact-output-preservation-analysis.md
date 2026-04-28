@@ -28,13 +28,47 @@ data: {"type":"response.completed","response":{"id":"resp_123","object":"respons
 
 ## 根因分析
 
-问题只发生在流式聚合路径，非流式路径会直接透传上游原始 body。
+问题分为两层：
+
+1. 响应侧字段丢失：只发生在流式聚合路径，非流式路径会直接透传上游原始 body。
+2. 请求侧字段丢失：`/v1/responses/compact` 请求进入网关后，先被解析为 `OpenAIResponsesCompactionRequest`；如果该 DTO 只声明少量字段，客户端提交的 Responses 上下文字段会在转发上游前被丢弃。
+
+### 响应侧根因
 
 原流式聚合逻辑使用 `dto.ResponsesStreamResponse` 解码 `response.completed` 事件。该结构中的 `Response` 类型是通用 `OpenAIResponsesResponse`，其 `Output` 字段是 `[]ResponsesOutput`。
 
 `ResponsesOutput` 当前覆盖的是普通 Responses 输出项，例如 message、tool call、image generation 等，但不包含 compact 专用字段 `encrypted_content`。JSON 解码到该结构后，Go 会忽略结构体中没有声明的字段；随后再次 marshal 返回客户端时，未声明字段已经不可恢复。
 
 也就是说，问题不是上游未返回 compact 内容，而是网关在流式聚合过程中把 compact 输出项过早结构化成了不完整 DTO。
+
+### 请求侧根因
+
+`OpenAIResponsesCompactionRequest` 原本只声明：
+
+- `model`
+- `input`
+- `instructions`
+- `previous_response_id`
+- `stream`
+
+但 Codex / Responses compact 请求可能携带完整 Responses 请求上下文字段，例如：
+
+- `include`
+- `conversation`
+- `context_management`
+- `metadata`
+- `parallel_tool_calls`
+- `reasoning`
+- `prompt_cache_key`
+- `prompt_cache_retention`
+- `safety_identifier`
+- `text`
+- `tool_choice`
+- `tools`
+- `truncation`
+- `user`
+
+这些字段在 `common.UnmarshalBodyReusable()` 阶段没有进入 DTO，后续即使适配器保持透传，也已经无法恢复。结果表现为 compact 接口返回 200，但压缩后的上下文窗口不完整，客户端恢复会话后丢失项目约束、工具上下文或其它必要状态。
 
 ## 官方修复方案
 
@@ -65,9 +99,15 @@ data: {"type":"response.completed","response":{"id":"resp_123","object":"respons
 4. 将 `response.output` 解码为 `json.RawMessage`，并原样写入 `OpenAIResponsesCompactionResponse.Output`。
 5. 错误处理继续使用 `dto.GetOpenAIError()` 从动态 `error` 字段中提取 OpenAI 错误。
 6. 增加回归测试，覆盖 compact 输出项携带 `encrypted_content` 时，网关响应仍保留该字段。
+7. 请求侧 `OpenAIResponsesCompactionRequest` 复用完整 `OpenAIResponsesRequest` 字段集合，避免 compact 请求在进入网关时丢弃 Responses 上下文字段。
+8. compact 转发到上游前不再手工只复制少数字段，而是将完整 `OpenAIResponsesRequest` 交给现有渠道适配器处理。
 
 相关文件：
 
+- `dto/openai_responses_compaction_request.go`
+- `dto/openai_request_zero_value_test.go`
+- `relay/responses_handler.go`
+- `relay/channel/codex/adaptor_test.go`
 - `relay/channel/openai/relay_responses_compact.go`
 - `relay/channel/openai/relay_responses_compact_test.go`
 
@@ -94,6 +134,7 @@ go test ./relay/channel/openai -run 'TestOaiResponsesCompactionHandler_(Aggregat
 2. `usage` 统计仍能正确返回给计费逻辑。
 3. `response.error` / `response.failed` 仍在写响应前转换成网关错误。
 4. compact 输出项中的 `encrypted_content` 不再丢失。
+5. compact 请求中的 Responses 上下文字段在解码、转发和 Codex 适配过程中不再丢失。
 
 ## 后续注意事项
 

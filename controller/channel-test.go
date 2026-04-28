@@ -707,8 +707,10 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 		case constant.EndpointTypeOpenAIResponseCompact:
 			// 返回 OpenAIResponsesCompactionRequest
 			return &dto.OpenAIResponsesCompactionRequest{
-				Model: model,
-				Input: testResponsesInput,
+				OpenAIResponsesRequest: dto.OpenAIResponsesRequest{
+					Model: model,
+					Input: testResponsesInput,
+				},
 			}
 		case constant.EndpointTypeAnthropic, constant.EndpointTypeGemini, constant.EndpointTypeOpenAI:
 			// 返回 GeneralOpenAIRequest
@@ -758,8 +760,10 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 	// Responses compaction models (must use /v1/responses/compact)
 	if strings.HasSuffix(model, ratio_setting.CompactModelSuffix) {
 		return &dto.OpenAIResponsesCompactionRequest{
-			Model: model,
-			Input: testResponsesInput,
+			OpenAIResponsesRequest: dto.OpenAIResponsesRequest{
+				Model: model,
+				Input: testResponsesInput,
+			},
 		}
 	}
 

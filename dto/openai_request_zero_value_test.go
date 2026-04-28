@@ -89,3 +89,53 @@ func TestOpenAIResponsesCompactionRequestPreserveExplicitStreamValue(t *testing.
 	require.True(t, gjson.GetBytes(encoded, "stream").Exists())
 	require.True(t, gjson.GetBytes(encoded, "stream").Bool())
 }
+
+func TestOpenAIResponsesCompactionRequestPreservesResponsesContextFields(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.5-openai-compact",
+		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"keep context"}]}],
+		"instructions":"preserve project instructions",
+		"include":["reasoning.encrypted_content"],
+		"conversation":"none",
+		"context_management":{"truncation":"auto"},
+		"metadata":{"project":"pdep"},
+		"parallel_tool_calls":true,
+		"previous_response_id":"resp_previous",
+		"reasoning":{"effort":"high","summary":"auto"},
+		"prompt_cache_key":"cache-key",
+		"prompt_cache_retention":"24h",
+		"safety_identifier":"user-123",
+		"text":{"format":{"type":"text"},"verbosity":"medium"},
+		"tool_choice":"auto",
+		"tools":[{"type":"function","name":"shell"}],
+		"truncation":"disabled",
+		"user":"codex"
+	}`)
+
+	var req OpenAIResponsesCompactionRequest
+	err := common.Unmarshal(raw, &req)
+	require.NoError(t, err)
+
+	encoded, err := common.Marshal(req)
+	require.NoError(t, err)
+
+	for _, path := range []string{
+		"include.0",
+		"conversation",
+		"context_management.truncation",
+		"metadata.project",
+		"parallel_tool_calls",
+		"previous_response_id",
+		"reasoning.effort",
+		"prompt_cache_key",
+		"prompt_cache_retention",
+		"safety_identifier",
+		"text.verbosity",
+		"tool_choice",
+		"tools.0.name",
+		"truncation",
+		"user",
+	} {
+		require.True(t, gjson.GetBytes(encoded, path).Exists(), "missing compact request field %s in %s", path, string(encoded))
+	}
+}
