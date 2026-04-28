@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -53,6 +54,17 @@ func OaiResponsesCompactionHandler(c *gin.Context, resp *http.Response) (*dto.Us
 func handleResponsesCompactionStreamBody(c *gin.Context, responseBody []byte) (*dto.Usage, *types.NewAPIError) {
 	var finalResp *dto.OpenAIResponsesCompactionResponse
 	var usage = &dto.Usage{}
+	type compactStreamResponse struct {
+		Type     string `json:"type"`
+		Response *struct {
+			ID        string          `json:"id"`
+			Object    string          `json:"object"`
+			CreatedAt int             `json:"created_at"`
+			Output    json.RawMessage `json:"output"`
+			Usage     *dto.Usage      `json:"usage"`
+			Error     any             `json:"error,omitempty"`
+		} `json:"response,omitempty"`
+	}
 
 	for _, line := range strings.Split(string(responseBody), "\n") {
 		line = strings.TrimSpace(line)
@@ -65,7 +77,7 @@ func handleResponsesCompactionStreamBody(c *gin.Context, responseBody []byte) (*
 			continue
 		}
 
-		var streamResponse dto.ResponsesStreamResponse
+		var streamResponse compactStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
 			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
@@ -73,7 +85,7 @@ func handleResponsesCompactionStreamBody(c *gin.Context, responseBody []byte) (*
 		switch streamResponse.Type {
 		case "response.error", "response.failed":
 			if streamResponse.Response != nil {
-				if oaiErr := streamResponse.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
+				if oaiErr := dto.GetOpenAIError(streamResponse.Response.Error); oaiErr != nil && oaiErr.Type != "" {
 					return nil, types.WithOpenAIError(*oaiErr, http.StatusInternalServerError)
 				}
 			}
@@ -87,16 +99,11 @@ func handleResponsesCompactionStreamBody(c *gin.Context, responseBody []byte) (*
 				continue
 			}
 
-			output, err := common.Marshal(streamResponse.Response.Output)
-			if err != nil {
-				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
-			}
-
 			finalResp = &dto.OpenAIResponsesCompactionResponse{
 				ID:        streamResponse.Response.ID,
 				Object:    streamResponse.Response.Object,
 				CreatedAt: streamResponse.Response.CreatedAt,
-				Output:    output,
+				Output:    streamResponse.Response.Output,
 				Usage:     streamResponse.Response.Usage,
 				Error:     streamResponse.Response.Error,
 			}
