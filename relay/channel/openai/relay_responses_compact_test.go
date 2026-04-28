@@ -65,6 +65,26 @@ func TestOaiResponsesCompactionHandler_PreservesCompactionSummaryEncryptedConten
 	require.Contains(t, recorder.Body.String(), `"encrypted_content":"encrypted-summary"`)
 }
 
+func TestOaiResponsesCompactionHandler_UsesOutputItemDoneWhenCompletedOutputEmpty(t *testing.T) {
+	t.Parallel()
+
+	body := strings.Join([]string{
+		"event: response.output_item.done",
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"compaction_summary","encrypted_content":"encrypted-summary"}}`,
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_123","object":"response","created_at":1774243072,"output":[],"usage":{"input_tokens":12,"output_tokens":6,"total_tokens":18}}}`,
+		"data: [DONE]",
+	}, "\n") + "\n"
+
+	c, recorder, resp := newResponsesCompactTestContext(body)
+
+	usage, compactErr := OaiResponsesCompactionHandler(c, resp)
+	require.Nil(t, compactErr)
+	require.NotNil(t, usage)
+	require.Contains(t, recorder.Body.String(), `"type":"compaction_summary"`)
+	require.Contains(t, recorder.Body.String(), `"encrypted_content":"encrypted-summary"`)
+}
+
 func TestOaiResponsesCompactionHandler_ReturnsStreamErrorBeforeWrite(t *testing.T) {
 	t.Parallel()
 

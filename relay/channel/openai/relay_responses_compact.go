@@ -56,8 +56,10 @@ func OaiResponsesCompactionHandler(c *gin.Context, resp *http.Response) (*dto.Us
 func handleResponsesCompactionStreamBody(c *gin.Context, responseBody []byte) (*dto.Usage, *types.NewAPIError) {
 	var finalResp *dto.OpenAIResponsesCompactionResponse
 	var usage = &dto.Usage{}
+	outputItems := make([]json.RawMessage, 0)
 	type compactStreamResponse struct {
-		Type     string `json:"type"`
+		Type     string          `json:"type"`
+		Item     json.RawMessage `json:"item,omitempty"`
 		Response *struct {
 			ID        string          `json:"id"`
 			Object    string          `json:"object"`
@@ -101,11 +103,20 @@ func handleResponsesCompactionStreamBody(c *gin.Context, responseBody []byte) (*
 				continue
 			}
 
+			output := streamResponse.Response.Output
+			if len(outputItems) > 0 && isEmptyJSONArray(output) {
+				mergedOutput, err := common.Marshal(outputItems)
+				if err != nil {
+					return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+				}
+				output = mergedOutput
+			}
+
 			finalResp = &dto.OpenAIResponsesCompactionResponse{
 				ID:        streamResponse.Response.ID,
 				Object:    streamResponse.Response.Object,
 				CreatedAt: streamResponse.Response.CreatedAt,
-				Output:    streamResponse.Response.Output,
+				Output:    output,
 				Usage:     streamResponse.Response.Usage,
 				Error:     streamResponse.Response.Error,
 			}
@@ -116,6 +127,10 @@ func handleResponsesCompactionStreamBody(c *gin.Context, responseBody []byte) (*
 				if finalResp.Usage.InputTokensDetails != nil {
 					usage.PromptTokensDetails.CachedTokens = finalResp.Usage.InputTokensDetails.CachedTokens
 				}
+			}
+		case "response.output_item.done":
+			if len(streamResponse.Item) > 0 && string(streamResponse.Item) != "null" {
+				outputItems = append(outputItems, append(json.RawMessage(nil), streamResponse.Item...))
 			}
 		}
 	}
@@ -132,6 +147,17 @@ func handleResponsesCompactionStreamBody(c *gin.Context, responseBody []byte) (*
 	c.Header("Content-Type", "application/json")
 	service.IOCopyBytesGracefully(c, nil, jsonData)
 	return usage, nil
+}
+
+func isEmptyJSONArray(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var items []json.RawMessage
+	if err := common.Unmarshal(raw, &items); err != nil {
+		return false
+	}
+	return len(items) == 0
 }
 
 func logResponsesCompactionSummary(c *gin.Context, mode string, bodyBytes int, output json.RawMessage, usage *dto.Usage) {
