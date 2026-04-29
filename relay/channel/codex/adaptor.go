@@ -54,8 +54,11 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
 	isCompact := info != nil && info.RelayMode == relayconstant.RelayModeResponsesCompact
-	forcedStream := true
-	request.Stream = &forcedStream
+	useBackendAPI := usesCodexBackendAPI(info)
+	if !isCompact || useBackendAPI {
+		forcedStream := true
+		request.Stream = &forcedStream
+	}
 	if info != nil && !isCompact {
 		info.IsStream = true
 	}
@@ -100,12 +103,19 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if len(request.Instructions) == 0 {
 		request.Instructions = json.RawMessage(`""`)
 	}
-	// Codex backend requires store=false for both responses and responses/compact.
-	request.Store = json.RawMessage("false")
 
 	if isCompact {
+		if useBackendAPI {
+			request.Store = json.RawMessage("false")
+			request.Tools = nil
+			request.ParallelToolCalls = nil
+		}
+		request.ToolChoice = nil
+		request.MaxToolCalls = nil
 		return request, nil
 	}
+	// Codex backend requires store=false for responses.
+	request.Store = json.RawMessage("false")
 	// rm max_output_tokens
 	request.MaxOutputTokens = nil
 	request.Temperature = nil
@@ -143,11 +153,18 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	if info.RelayMode != relayconstant.RelayModeResponses && info.RelayMode != relayconstant.RelayModeResponsesCompact {
 		return "", errors.New("codex channel: only /v1/responses and /v1/responses/compact are supported")
 	}
+	if info.RelayMode == relayconstant.RelayModeResponsesCompact && !usesCodexBackendAPI(info) {
+		return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, "/v1/responses/compact", info.ChannelType), nil
+	}
 	path := "/backend-api/codex/responses"
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact {
 		path = "/backend-api/codex/responses/compact"
 	}
 	return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, path, info.ChannelType), nil
+}
+
+func usesCodexBackendAPI(info *relaycommon.RelayInfo) bool {
+	return info != nil && strings.HasPrefix(strings.TrimSpace(info.ApiKey), "{")
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {

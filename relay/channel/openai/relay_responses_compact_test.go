@@ -24,7 +24,7 @@ func newResponsesCompactTestContext(body string) (*gin.Context, *httptest.Respon
 	return c, recorder, resp
 }
 
-func TestOaiResponsesCompactionHandler_AggregatesResponsesStreamBody(t *testing.T) {
+func TestOaiResponsesCompactionHandler_RejectsNonCompactionStreamOutput(t *testing.T) {
 	t.Parallel()
 
 	body := strings.Join([]string{
@@ -38,13 +38,26 @@ func TestOaiResponsesCompactionHandler_AggregatesResponsesStreamBody(t *testing.
 	c, recorder, resp := newResponsesCompactTestContext(body)
 
 	usage, compactErr := OaiResponsesCompactionHandler(c, resp)
-	require.Nil(t, compactErr)
-	require.NotNil(t, usage)
-	require.Equal(t, 12, usage.PromptTokens)
-	require.Equal(t, 6, usage.CompletionTokens)
-	require.Equal(t, 18, usage.TotalTokens)
-	require.Contains(t, recorder.Body.String(), `"id":"resp_123"`)
-	require.Contains(t, recorder.Body.String(), `"total_tokens":18`)
+	require.Nil(t, usage)
+	require.NotNil(t, compactErr)
+	require.Equal(t, http.StatusBadGateway, compactErr.StatusCode)
+	require.Zero(t, recorder.Body.Len())
+	require.Contains(t, compactErr.Error(), "missing compaction item")
+}
+
+func TestOaiResponsesCompactionHandler_RejectsNonCompactionJSONOutput(t *testing.T) {
+	t.Parallel()
+
+	body := `{"id":"resp_123","object":"response","created_at":1774243072,"output":[{"type":"message","id":"msg_123","status":"completed","role":"assistant","content":[{"type":"output_text","text":"done","annotations":[]}]}],"usage":{"input_tokens":12,"output_tokens":6,"total_tokens":18}}`
+
+	c, recorder, resp := newResponsesCompactTestContext(body)
+
+	usage, compactErr := OaiResponsesCompactionHandler(c, resp)
+	require.Nil(t, usage)
+	require.NotNil(t, compactErr)
+	require.Equal(t, http.StatusBadGateway, compactErr.StatusCode)
+	require.Zero(t, recorder.Body.Len())
+	require.Contains(t, compactErr.Error(), "missing compaction item")
 }
 
 func TestOaiResponsesCompactionHandler_PreservesCompactionSummaryEncryptedContent(t *testing.T) {

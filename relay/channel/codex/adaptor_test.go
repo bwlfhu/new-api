@@ -44,13 +44,15 @@ func TestConvertOpenAIResponsesRequest_SetsStoreFalseForResponses(t *testing.T) 
 	require.True(t, info.IsStream)
 }
 
-func TestConvertOpenAIResponsesRequest_SetsStoreFalseForResponsesCompact(t *testing.T) {
+func TestConvertOpenAIResponsesRequest_UsesOfficialShapeForAPIKeyResponsesCompact(t *testing.T) {
 	t.Parallel()
 
 	adaptor := &Adaptor{}
 	info := &relaycommon.RelayInfo{
-		RelayMode:   relayconstant.RelayModeResponsesCompact,
-		ChannelMeta: &relaycommon.ChannelMeta{},
+		RelayMode: relayconstant.RelayModeResponsesCompact,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ApiKey: "sk-test",
+		},
 	}
 	request := dto.OpenAIResponsesRequest{
 		Model:              "compact-2026-01-12",
@@ -68,11 +70,86 @@ func TestConvertOpenAIResponsesRequest_SetsStoreFalseForResponsesCompact(t *test
 	var payload map[string]any
 	err = common.Unmarshal(data, &payload)
 	require.NoError(t, err)
-	require.Equal(t, false, payload["store"])
-	require.Equal(t, true, payload["stream"])
+	_, hasStore := payload["store"]
+	require.False(t, hasStore)
+	_, hasStream := payload["stream"]
+	require.False(t, hasStream)
 	require.Equal(t, "resp_123", payload["previous_response_id"])
 	require.Equal(t, "compact please", payload["instructions"])
 	require.False(t, info.IsStream)
+}
+
+func TestConvertOpenAIResponsesRequest_PreservesToolsForAPIKeyResponsesCompact(t *testing.T) {
+	t.Parallel()
+
+	adaptor := &Adaptor{}
+	info := &relaycommon.RelayInfo{
+		RelayMode: relayconstant.RelayModeResponsesCompact,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ApiKey: "sk-test",
+		},
+	}
+	request := dto.OpenAIResponsesRequest{
+		Model:             "compact-2026-01-12",
+		Input:             json.RawMessage(`[{"type":"message","role":"user","content":[{"type":"input_text","text":"compact context"}]}]`),
+		ParallelToolCalls: json.RawMessage(`true`),
+		ToolChoice:        json.RawMessage(`"auto"`),
+		Tools:             json.RawMessage(`[{"type":"function","name":"shell"}]`),
+		MaxToolCalls:      ptrUint(0),
+	}
+
+	converted, err := adaptor.ConvertOpenAIResponsesRequest(nil, info, request)
+	require.NoError(t, err)
+
+	data, err := common.Marshal(converted)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	err = common.Unmarshal(data, &payload)
+	require.NoError(t, err)
+	_, hasToolChoice := payload["tool_choice"]
+	require.False(t, hasToolChoice)
+	require.Equal(t, []any{map[string]any{"type": "function", "name": "shell"}}, payload["tools"])
+	require.Equal(t, true, payload["parallel_tool_calls"])
+	_, hasMaxToolCalls := payload["max_tool_calls"]
+	require.False(t, hasMaxToolCalls)
+}
+
+func TestConvertOpenAIResponsesRequest_UsesBackendShapeForOAuthResponsesCompact(t *testing.T) {
+	t.Parallel()
+
+	adaptor := &Adaptor{}
+	info := &relaycommon.RelayInfo{
+		RelayMode: relayconstant.RelayModeResponsesCompact,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ApiKey: `{"access_token":"token","account_id":"account"}`,
+		},
+	}
+	request := dto.OpenAIResponsesRequest{
+		Model:             "compact-2026-01-12",
+		Input:             json.RawMessage(`[{"type":"message","role":"user","content":[{"type":"input_text","text":"compact context"}]}]`),
+		ParallelToolCalls: json.RawMessage(`true`),
+		ToolChoice:        json.RawMessage(`"auto"`),
+		Tools:             json.RawMessage(`[{"type":"function","name":"shell"}]`),
+	}
+
+	converted, err := adaptor.ConvertOpenAIResponsesRequest(nil, info, request)
+	require.NoError(t, err)
+
+	data, err := common.Marshal(converted)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	err = common.Unmarshal(data, &payload)
+	require.NoError(t, err)
+	require.Equal(t, false, payload["store"])
+	require.Equal(t, true, payload["stream"])
+	_, hasToolChoice := payload["tool_choice"]
+	require.False(t, hasToolChoice)
+	_, hasTools := payload["tools"]
+	require.False(t, hasTools)
+	_, hasParallelToolCalls := payload["parallel_tool_calls"]
+	require.False(t, hasParallelToolCalls)
 }
 
 func TestConvertOpenAIResponsesRequest_PreservesCompactContextFields(t *testing.T) {
@@ -80,8 +157,10 @@ func TestConvertOpenAIResponsesRequest_PreservesCompactContextFields(t *testing.
 
 	adaptor := &Adaptor{}
 	info := &relaycommon.RelayInfo{
-		RelayMode:   relayconstant.RelayModeResponsesCompact,
-		ChannelMeta: &relaycommon.ChannelMeta{},
+		RelayMode: relayconstant.RelayModeResponsesCompact,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ApiKey: "sk-test",
+		},
 	}
 	request := dto.OpenAIResponsesRequest{
 		Model:                "compact-2026-01-12",
@@ -114,15 +193,50 @@ func TestConvertOpenAIResponsesRequest_PreservesCompactContextFields(t *testing.
 	require.Equal(t, "none", payload["conversation"])
 	require.Equal(t, map[string]any{"truncation": "auto"}, payload["context_management"])
 	require.Equal(t, map[string]any{"project": "pdep"}, payload["metadata"])
-	require.Equal(t, true, payload["parallel_tool_calls"])
 	require.Equal(t, "cache-key", payload["prompt_cache_key"])
 	require.Equal(t, "24h", payload["prompt_cache_retention"])
 	require.Equal(t, "user-123", payload["safety_identifier"])
 	require.Equal(t, map[string]any{"format": map[string]any{"type": "text"}, "verbosity": "medium"}, payload["text"])
-	require.Equal(t, "auto", payload["tool_choice"])
-	require.Equal(t, []any{map[string]any{"type": "function", "name": "shell"}}, payload["tools"])
 	require.Equal(t, "disabled", payload["truncation"])
 	require.Equal(t, "codex", payload["user"])
+	_, hasToolChoice := payload["tool_choice"]
+	require.False(t, hasToolChoice)
+	require.Equal(t, []any{map[string]any{"type": "function", "name": "shell"}}, payload["tools"])
+	require.Equal(t, true, payload["parallel_tool_calls"])
+}
+
+func TestGetRequestURLForResponsesCompactUsesStandardEndpointWithAPIKey(t *testing.T) {
+	t.Parallel()
+
+	adaptor := &Adaptor{}
+	info := &relaycommon.RelayInfo{
+		RelayMode: relayconstant.RelayModeResponsesCompact,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ApiKey:         "sk-test",
+			ChannelBaseUrl: "https://relay03.gaccode.com/codex",
+		},
+	}
+
+	got, err := adaptor.GetRequestURL(info)
+	require.NoError(t, err)
+	require.Equal(t, "https://relay03.gaccode.com/codex/v1/responses/compact", got)
+}
+
+func TestGetRequestURLForResponsesCompactUsesBackendEndpointWithOAuth(t *testing.T) {
+	t.Parallel()
+
+	adaptor := &Adaptor{}
+	info := &relaycommon.RelayInfo{
+		RelayMode: relayconstant.RelayModeResponsesCompact,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ApiKey:         `{"access_token":"token","account_id":"account"}`,
+			ChannelBaseUrl: "https://chatgpt.com",
+		},
+	}
+
+	got, err := adaptor.GetRequestURL(info)
+	require.NoError(t, err)
+	require.Equal(t, "https://chatgpt.com/backend-api/codex/responses/compact", got)
 }
 
 func ptrUint(v uint) *uint {

@@ -38,6 +38,9 @@ func OaiResponsesCompactionHandler(c *gin.Context, resp *http.Response) (*dto.Us
 	}
 
 	logResponsesCompactionSummary(c, "json", len(responseBody), compactResp.Output, compactResp.Usage)
+	if err := validateResponsesCompactionOutput(compactResp.Output); err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+	}
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	usage := dto.Usage{}
@@ -140,6 +143,9 @@ func handleResponsesCompactionStreamBody(c *gin.Context, responseBody []byte) (*
 	}
 
 	logResponsesCompactionSummary(c, "stream", len(responseBody), finalResp.Output, finalResp.Usage)
+	if err := validateResponsesCompactionOutput(finalResp.Output); err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+	}
 	jsonData, err := common.Marshal(finalResp)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
@@ -158,6 +164,24 @@ func isEmptyJSONArray(raw json.RawMessage) bool {
 		return false
 	}
 	return len(items) == 0
+}
+
+func validateResponsesCompactionOutput(output json.RawMessage) error {
+	type outputItem struct {
+		Type             string          `json:"type"`
+		EncryptedContent json.RawMessage `json:"encrypted_content,omitempty"`
+	}
+
+	var items []outputItem
+	if err := common.Unmarshal(output, &items); err != nil {
+		return fmt.Errorf("responses compact output is not a JSON array: %w", err)
+	}
+	for _, item := range items {
+		if item.Type == "compaction_summary" || item.Type == "compaction" || len(item.EncryptedContent) > 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf("responses compact output missing compaction item")
 }
 
 func logResponsesCompactionSummary(c *gin.Context, mode string, bodyBytes int, output json.RawMessage, usage *dto.Usage) {
