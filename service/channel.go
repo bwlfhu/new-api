@@ -27,6 +27,12 @@ func DisableChannel(channelError types.ChannelError, reason string) {
 
 	success := model.UpdateChannelStatus(channelError.ChannelId, channelError.UsingKey, common.ChannelStatusAutoDisabled, reason)
 	if success {
+		channel, err := model.CacheGetChannel(channelError.ChannelId)
+		if err != nil || channel == nil || channel.Status != common.ChannelStatusEnabled {
+			if _, err := ClearChannelAffinityCacheByChannelID(channelError.ChannelId); err != nil {
+				common.SysError(fmt.Sprintf("clear channel affinity cache failed: channel_id=%d err=%v", channelError.ChannelId, err))
+			}
+		}
 		subject := fmt.Sprintf("通道「%s」（#%d）已被禁用", channelError.ChannelName, channelError.ChannelId)
 		content := fmt.Sprintf("通道「%s」（#%d）已被禁用，原因：%s", channelError.ChannelName, channelError.ChannelId, reason)
 		NotifyRootUser(formatNotifyType(channelError.ChannelId, common.ChannelStatusAutoDisabled), subject, content)

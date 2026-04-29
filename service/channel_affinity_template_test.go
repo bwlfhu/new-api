@@ -176,6 +176,71 @@ func TestShouldSkipRetryAfterChannelAffinityFailure(t *testing.T) {
 	}
 }
 
+func TestClearChannelAffinityCacheByChannelID(t *testing.T) {
+	cache := getChannelAffinityCache()
+	channelID := int(time.Now().UnixNano()%1_000_000_000) + 1000
+	otherChannelID := channelID + 1
+	key1 := fmt.Sprintf("test-clear-channel-id:%d:one", channelID)
+	key2 := fmt.Sprintf("test-clear-channel-id:%d:two", channelID)
+	key3 := fmt.Sprintf("test-clear-channel-id:%d:other", channelID)
+
+	require.NoError(t, cache.SetWithTTL(key1, channelID, time.Minute))
+	require.NoError(t, cache.SetWithTTL(key2, channelID, time.Minute))
+	require.NoError(t, cache.SetWithTTL(key3, otherChannelID, time.Minute))
+	t.Cleanup(func() {
+		_, _ = cache.DeleteMany([]string{key1, key2, key3})
+	})
+
+	deleted, err := ClearChannelAffinityCacheByChannelID(channelID)
+	require.NoError(t, err)
+	require.Equal(t, 2, deleted)
+
+	_, found, err := cache.Get(key1)
+	require.NoError(t, err)
+	require.False(t, found)
+	_, found, err = cache.Get(key2)
+	require.NoError(t, err)
+	require.False(t, found)
+	got, found, err := cache.Get(key3)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, otherChannelID, got)
+}
+
+func TestDeleteCurrentChannelAffinityCacheEntryKeepsContextForRerecord(t *testing.T) {
+	cache := getChannelAffinityCache()
+	channelID := int(time.Now().UnixNano()%1_000_000_000) + 2000
+	newChannelID := channelID + 1
+	cacheKeySuffix := fmt.Sprintf("test-delete-current:%d", channelID)
+	cacheKeyFull := channelAffinityCacheNamespace + ":" + cacheKeySuffix
+
+	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, channelID, time.Minute))
+	t.Cleanup(func() {
+		_, _ = cache.DeleteMany([]string{cacheKeySuffix})
+	})
+
+	ctx := buildChannelAffinityTemplateContextForTest(channelAffinityMeta{
+		CacheKey:   cacheKeyFull,
+		TTLSeconds: 60,
+		RuleName:   "test-delete-current",
+		SkipRetry:  true,
+	})
+
+	deleted, err := DeleteCurrentChannelAffinityCacheEntry(ctx)
+	require.NoError(t, err)
+	require.True(t, deleted)
+
+	_, found, err := cache.Get(cacheKeySuffix)
+	require.NoError(t, err)
+	require.False(t, found)
+
+	RecordChannelAffinity(ctx, newChannelID)
+	got, found, err := cache.Get(cacheKeySuffix)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, newChannelID, got)
+}
+
 func TestChannelAffinityHitCodexTemplatePassHeadersEffective(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

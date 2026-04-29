@@ -706,6 +706,7 @@ func DeleteChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	clearChannelAffinityCacheForChannelIDs([]int{id})
 	model.InitChannelCache()
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -715,11 +716,17 @@ func DeleteChannel(c *gin.Context) {
 }
 
 func DeleteDisabledChannel(c *gin.Context) {
+	channelIDs, err := model.GetDisabledChannelIds()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	rows, err := model.DeleteDisabledChannel()
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	clearChannelAffinityCacheForChannelIDs(channelIDs)
 	model.InitChannelCache()
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -727,6 +734,25 @@ func DeleteDisabledChannel(c *gin.Context) {
 		"data":    rows,
 	})
 	return
+}
+
+func clearChannelAffinityCacheForChannelIDs(channelIDs []int) {
+	if len(channelIDs) == 0 {
+		return
+	}
+	seen := make(map[int]struct{}, len(channelIDs))
+	for _, channelID := range channelIDs {
+		if channelID <= 0 {
+			continue
+		}
+		if _, ok := seen[channelID]; ok {
+			continue
+		}
+		seen[channelID] = struct{}{}
+		if _, err := service.ClearChannelAffinityCacheByChannelID(channelID); err != nil {
+			common.SysError(fmt.Sprintf("clear channel affinity cache failed: channel_id=%d err=%v", channelID, err))
+		}
+	}
 }
 
 type ChannelTag struct {
@@ -751,11 +777,17 @@ func DisableTagChannels(c *gin.Context) {
 		})
 		return
 	}
+	channelIDs, err := model.GetChannelIdsByTag(channelTag.Tag)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	err = model.DisableChannelByTag(channelTag.Tag)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	clearChannelAffinityCacheForChannelIDs(channelIDs)
 	model.InitChannelCache()
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -859,6 +891,7 @@ func DeleteChannelBatch(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	clearChannelAffinityCacheForChannelIDs(channelBatch.Ids)
 	model.InitChannelCache()
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -992,6 +1025,9 @@ func UpdateChannel(c *gin.Context) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if originChannel.Status == common.ChannelStatusEnabled && channel.Status != common.ChannelStatusEnabled {
+		clearChannelAffinityCacheForChannelIDs([]int{channel.Id})
 	}
 	model.InitChannelCache()
 	service.ResetProxyClientCache()

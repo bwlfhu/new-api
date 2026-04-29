@@ -104,12 +104,7 @@ func Distribute() func(c *gin.Context) {
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
 					preferred, err := model.CacheGetChannel(preferredChannelID)
 					if err == nil && preferred != nil {
-						if preferred.Status != common.ChannelStatusEnabled {
-							if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
-								abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
-								return
-							}
-						} else if usingGroup == "auto" {
+						if preferred.Status == common.ChannelStatusEnabled && usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 							autoGroups := service.GetUserAutoGroup(userGroup)
 							for _, g := range autoGroups {
@@ -121,10 +116,15 @@ func Distribute() func(c *gin.Context) {
 									break
 								}
 							}
-						} else if model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
+						} else if preferred.Status == common.ChannelStatusEnabled && model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
 							channel = preferred
 							selectGroup = usingGroup
 							service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
+						}
+					}
+					if channel == nil {
+						if _, err := service.DeleteCurrentChannelAffinityCacheEntry(c); err != nil {
+							common.SysError(fmt.Sprintf("channel affinity cache delete stale entry failed: request_id=%s channel_id=%d err=%v", requestId, preferredChannelID, err))
 						}
 					}
 				}
@@ -195,10 +195,10 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			midjourneyRequest := dto.MidjourneyRequest{}
 			err = common.UnmarshalBodyReusable(c, &midjourneyRequest)
 			requestId := c.GetString(common.RequestIdKey)
-		if err == nil {
-			common.SysLog(fmt.Sprintf("distribute request: request_id=%s path=%s method=%s model=%s should_select=%v", requestId, c.Request.URL.Path, c.Request.Method, modelRequest.Model, shouldSelectChannel))
-		}
-		if err != nil {
+			if err == nil {
+				common.SysLog(fmt.Sprintf("distribute request: request_id=%s path=%s method=%s model=%s should_select=%v", requestId, c.Request.URL.Path, c.Request.Method, modelRequest.Model, shouldSelectChannel))
+			}
+			if err != nil {
 				return nil, false, errors.New(i18n.T(c, i18n.MsgDistributorInvalidMidjourney, map[string]any{"Error": err.Error()}))
 			}
 			midjourneyModel, mjErr, success := service.GetMjRequestModel(relayMode, &midjourneyRequest)
@@ -242,10 +242,10 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			relayMode = relayconstant.RelayModeVideoSubmit
 			req, err := getModelFromRequest(c)
 			requestId := c.GetString(common.RequestIdKey)
-		if err == nil {
-			common.SysLog(fmt.Sprintf("distribute request: request_id=%s path=%s method=%s model=%s should_select=%v", requestId, c.Request.URL.Path, c.Request.Method, modelRequest.Model, shouldSelectChannel))
-		}
-		if err != nil {
+			if err == nil {
+				common.SysLog(fmt.Sprintf("distribute request: request_id=%s path=%s method=%s model=%s should_select=%v", requestId, c.Request.URL.Path, c.Request.Method, modelRequest.Model, shouldSelectChannel))
+			}
+			if err != nil {
 				return nil, false, err
 			}
 			if req != nil {
@@ -261,10 +261,10 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		if c.Request.Method == http.MethodPost {
 			req, err := getModelFromRequest(c)
 			requestId := c.GetString(common.RequestIdKey)
-		if err == nil {
-			common.SysLog(fmt.Sprintf("distribute request: request_id=%s path=%s method=%s model=%s should_select=%v", requestId, c.Request.URL.Path, c.Request.Method, modelRequest.Model, shouldSelectChannel))
-		}
-		if err != nil {
+			if err == nil {
+				common.SysLog(fmt.Sprintf("distribute request: request_id=%s path=%s method=%s model=%s should_select=%v", requestId, c.Request.URL.Path, c.Request.Method, modelRequest.Model, shouldSelectChannel))
+			}
+			if err != nil {
 				return nil, false, err
 			}
 			modelRequest.Model = req.Model

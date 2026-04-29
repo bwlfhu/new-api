@@ -245,6 +245,67 @@ func ClearChannelAffinityCacheByRuleName(ruleName string) (int, error) {
 	return deleted, nil
 }
 
+func ClearChannelAffinityCacheByChannelID(channelID int) (int, error) {
+	if channelID <= 0 {
+		return 0, nil
+	}
+
+	cache := getChannelAffinityCache()
+	keys, err := cache.Keys()
+	if err != nil {
+		return 0, err
+	}
+	if len(keys) == 0 {
+		return 0, nil
+	}
+
+	keysToDelete := make([]string, 0)
+	for _, key := range keys {
+		cachedChannelID, found, err := cache.Get(key)
+		if err != nil {
+			return 0, err
+		}
+		if found && cachedChannelID == channelID {
+			keysToDelete = append(keysToDelete, key)
+		}
+	}
+	if len(keysToDelete) == 0 {
+		return 0, nil
+	}
+
+	res, err := cache.DeleteMany(keysToDelete)
+	if err != nil {
+		return 0, err
+	}
+	deleted := 0
+	for _, ok := range res {
+		if ok {
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
+func DeleteCurrentChannelAffinityCacheEntry(c *gin.Context) (bool, error) {
+	if c == nil {
+		return false, nil
+	}
+	cacheKey, _, ok := getChannelAffinityContext(c)
+	if !ok {
+		return false, nil
+	}
+	res, err := getChannelAffinityCache().DeleteMany([]string{cacheKey})
+	if err != nil {
+		return false, err
+	}
+	for _, deleted := range res {
+		if deleted {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func matchAnyRegexCached(patterns []string, s string) bool {
 	if len(patterns) == 0 || s == "" {
 		return false

@@ -703,6 +703,12 @@ func EnableChannelByTag(tag string) error {
 	return err
 }
 
+func GetChannelIdsByTag(tag string) ([]int, error) {
+	var ids []int
+	err := DB.Model(&Channel{}).Where("tag = ?", tag).Pluck("id", &ids).Error
+	return ids, err
+}
+
 func DisableChannelByTag(tag string) error {
 	err := DB.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusManuallyDisabled).Error
 	if err != nil {
@@ -786,6 +792,14 @@ func updateChannelUsedQuota(id int, quota int) {
 func DeleteChannelByStatus(status int64) (int64, error) {
 	result := DB.Where("status = ?", status).Delete(&Channel{})
 	return result.RowsAffected, result.Error
+}
+
+func GetDisabledChannelIds() ([]int, error) {
+	var ids []int
+	err := DB.Model(&Channel{}).
+		Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).
+		Pluck("id", &ids).Error
+	return ids, err
 }
 
 func DeleteDisabledChannel() (int64, error) {
