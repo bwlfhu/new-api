@@ -18,7 +18,7 @@ This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI pro
   - avoid overwriting user changes or unrelated local modifications
   - fetch both remotes first, then decide whether to merge or rebase
 - Prefer this maintenance sequence:
-  1. `git fetch origin fork --prune`
+  1. `git fetch --prune origin && git fetch --prune fork`
   2. sync local base branch from upstream mainline
   3. branch or rebase feature work on top of the updated upstream base
   4. push maintenance branches to the personal fork
@@ -32,7 +32,7 @@ This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI pro
 ## Tech Stack
 
 - **Backend**: Go 1.22+, Gin web framework, GORM v2 ORM
-- **Frontend**: React 18, Vite, Semi Design UI (@douyinfe/semi-ui)
+- **Frontend**: React 19, TypeScript, Rsbuild, Base UI, Tailwind CSS
 - **Databases**: SQLite, MySQL, PostgreSQL (all three must be supported)
 - **Cache**: Redis (go-redis) + in-memory cache
 - **Auth**: JWT, WebAuthn/Passkeys, OAuth (GitHub, Discord, OIDC, etc.)
@@ -67,21 +67,19 @@ logger/                        — Logger bootstrap and shared logging helpers
 docs/                          — Project docs, installation docs, OpenAPI docs, channel docs
 electron/                      — Electron desktop wrapper and tray integration assets
 bin/                           — Build/runtime helper assets
-web/                           — Frontend app
-web/public/                    — Static frontend assets
-web/src/components/            — Reusable React UI components
-web/src/pages/                 — Route-level pages
-web/src/hooks/                 — Feature hooks and data fetching hooks
-web/src/services/              — Frontend API request wrappers
-web/src/context/               — Global status/theme/user context
-web/src/i18n/                  — Frontend i18n bootstrap and locale files
+web/                           — Frontend themes container
+web/default/                   — Default frontend (React 19, Rsbuild, Base UI, Tailwind)
+web/default/src/i18n/          — Default frontend i18n resources
+web/classic/                   — Classic frontend (React 18, Vite, Semi Design)
+web/classic/src/components/    — Classic reusable React UI components
+web/classic/src/pages/         — Classic route-level pages
 ```
 
 ## Project Structure Notes
 
 - Backend request path normally follows `router -> controller -> service -> model`, while relay traffic may additionally enter `relay/*` after controller-level validation.
 - `controller/relay.go`, `router/relay-router.go`, `relay/*`, `dto/*`, and `model/channel.go` form the main relay change surface for upstream protocol adaptation.
-- Channel management UI is mainly under `web/src/pages/Channel` and `web/src/components/table/channels`.
+- Channel management UI is mainly under `web/default/src/features/channels` and `web/classic/src/components/table/channels`.
 - Settings-related backend changes usually span `controller/option.go`, `model/option.go`, and `setting/*`.
 - OAuth and passkey related work is split across `controller/*oauth*`, `controller/passkey.go`, `oauth/*`, `service/passkey`, and corresponding frontend auth components.
 - Documentation is not yet fully initialized into a complete architecture-doc set under `docs/architecture/`; if later needed, continue initialization there instead of scattering design notes into random files.
@@ -92,13 +90,12 @@ web/src/i18n/                  — Frontend i18n bootstrap and locale files
 - Library: `nicksnyder/go-i18n/v2`
 - Languages: en, zh
 
-### Frontend (`web/src/i18n/`)
+### Frontend (`web/default/src/i18n/`)
 - Library: `i18next` + `react-i18next` + `i18next-browser-languagedetector`
-- Languages: zh (fallback), en, fr, ru, ja, vi
-- Translation files: `web/src/i18n/locales/{lang}.json` — flat JSON, keys are Chinese source strings
-- Usage: `useTranslation()` hook, call `t('中文key')` in components
-- Semi UI locale synced via `SemiLocaleWrapper`
-- CLI tools: `bun run i18n:extract`, `bun run i18n:sync`, `bun run i18n:lint`
+- Languages: en (base), zh (fallback), fr, ru, ja, vi
+- Translation files: `web/default/src/i18n/locales/{lang}.json` — flat JSON, keys are English source strings
+- Usage: `useTranslation()` hook, call `t('English key')` in components
+- CLI tools: `bun run i18n:sync` (from `web/default/`)
 
 ## Maintenance Workflow
 
@@ -161,7 +158,7 @@ All database code MUST be fully compatible with all three databases simultaneous
 
 ### Rule 3: Frontend — Prefer Bun
 
-Use `bun` as the preferred package manager and script runner for the frontend (`web/` directory):
+Use `bun` as the preferred package manager and script runner for the frontend (`web/default/` directory):
 - `bun install` for dependency installation
 - `bun run dev` for development server
 - `bun run build` for production build
@@ -198,3 +195,7 @@ For request structs that are parsed from client JSON and then re-marshaled to up
   - field absent in client JSON => `nil` => omitted on marshal;
   - field explicitly set to zero/false => non-`nil` pointer => must still be sent upstream.
 - Avoid using non-pointer scalars with `omitempty` for optional request parameters, because zero values (`0`, `0.0`, `false`) will be silently dropped during marshal.
+
+### Rule 7: Billing Expression System — Read `pkg/billingexpr/expr.md`
+
+When working on tiered/dynamic billing (expression-based pricing), you MUST read `pkg/billingexpr/expr.md` first. It documents the design philosophy, expression language (variables, functions, examples), full system architecture (editor → storage → pre-consume → settlement → log display), token normalization rules (`p`/`c` auto-exclusion), quota conversion, and expression versioning. All code changes to the billing expression system must follow the patterns described in that document.

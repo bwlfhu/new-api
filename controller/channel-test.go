@@ -20,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -103,7 +104,24 @@ func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointTyp
 	return normalized
 }
 
-func testChannel(channel *model.Channel, testModel string, endpointType string, isStream bool) testResult {
+func resolveChannelTestUserID(c *gin.Context) (int, error) {
+	if c != nil {
+		if userID := c.GetInt("id"); userID > 0 {
+			return userID, nil
+		}
+	}
+
+	var rootUser model.User
+	if err := model.DB.Select("id").Where("role = ?", common.RoleRootUser).First(&rootUser).Error; err != nil {
+		return 0, fmt.Errorf("failed to resolve channel test user: %w", err)
+	}
+	if rootUser.Id == 0 {
+		return 0, errors.New("failed to resolve channel test user")
+	}
+	return rootUser.Id, nil
+}
+
+func testChannel(channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool) testResult {
 	tik := time.Now()
 	var unsupportedTestChannelTypes = []int{
 		constant.ChannelTypeMidjourney,
@@ -176,7 +194,7 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 		Header: make(http.Header),
 	}
 
-	cache, err := model.GetUserCache(1)
+	cache, err := model.GetUserCache(testUserID)
 	if err != nil {
 		return testResult{
 			localErr:    err,
@@ -184,13 +202,13 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 		}
 	}
 	cache.WriteContext(c)
-	c.Set("id", 1)
+	c.Set("id", testUserID)
 
 	//c.Request.Header.Set("Authorization", "Bearer "+channel.Key)
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set("channel", channel.Type)
 	c.Set("base_url", channel.GetBaseURL())
-	group, _ := model.GetUserGroup(1, false)
+	group, _ := model.GetUserGroup(testUserID, false)
 	c.Set("group", group)
 
 	newAPIError := middleware.SetupContextForSelectedChannel(c, channel, testModel)
@@ -266,6 +284,15 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 
 	info.IsChannelTest = true
 	info.InitChannelMeta(c)
+
+	err = attachTestBillingRequestInput(info, request)
+	if err != nil {
+		return testResult{
+			context:     c,
+			localErr:    err,
+			newAPIError: types.NewError(err, types.ErrorCodeJsonMarshalFailed),
+		}
+	}
 
 	err = helper.ModelMappedHelper(c, info, request)
 	if err != nil {
@@ -503,22 +530,12 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 	}
 	info.SetEstimatePromptTokens(usage.PromptTokens)
 
-	quota := 0
-	if !priceData.UsePrice {
-		quota = usage.PromptTokens + int(math.Round(float64(usage.CompletionTokens)*priceData.CompletionRatio))
-		quota = int(math.Round(float64(quota) * priceData.ModelRatio))
-		if priceData.ModelRatio != 0 && quota <= 0 {
-			quota = 1
-		}
-	} else {
-		quota = int(priceData.ModelPrice * common.QuotaPerUnit)
-	}
+	quota, tieredResult := settleTestQuota(info, priceData, usage)
 	tok := time.Now()
 	milliseconds := tok.Sub(tik).Milliseconds()
 	consumedTime := float64(milliseconds) / 1000.0
-	other := service.GenerateTextOtherInfo(c, info, priceData.ModelRatio, priceData.GroupRatioInfo.GroupRatio, priceData.CompletionRatio,
-		usage.PromptTokensDetails.CachedTokens, priceData.CacheRatio, priceData.ModelPrice, priceData.GroupRatioInfo.GroupSpecialRatio)
-	model.RecordConsumeLog(c, 1, model.RecordConsumeLogParams{
+	other := buildTestLogOther(c, info, priceData, usage, tieredResult)
+	model.RecordConsumeLog(c, testUserID, model.RecordConsumeLogParams{
 		ChannelId:        channel.Id,
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
@@ -537,6 +554,50 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 		localErr:    nil,
 		newAPIError: nil,
 	}
+}
+
+func attachTestBillingRequestInput(info *relaycommon.RelayInfo, request dto.Request) error {
+	if info == nil {
+		return nil
+	}
+
+	input, err := helper.BuildBillingExprRequestInputFromRequest(request, info.RequestHeaders)
+	if err != nil {
+		return err
+	}
+	info.BillingRequestInput = &input
+	return nil
+}
+
+func settleTestQuota(info *relaycommon.RelayInfo, priceData types.PriceData, usage *dto.Usage) (int, *billingexpr.TieredResult) {
+	if usage != nil && info != nil && info.TieredBillingSnapshot != nil {
+		isClaudeUsageSemantic := usage.UsageSemantic == "anthropic" || info.GetFinalRequestRelayFormat() == types.RelayFormatClaude
+		usedVars := billingexpr.UsedVars(info.TieredBillingSnapshot.ExprString)
+		if ok, quota, result := service.TryTieredSettle(info, service.BuildTieredTokenParams(usage, isClaudeUsageSemantic, usedVars)); ok {
+			return quota, result
+		}
+	}
+
+	quota := 0
+	if !priceData.UsePrice {
+		quota = usage.PromptTokens + int(math.Round(float64(usage.CompletionTokens)*priceData.CompletionRatio))
+		quota = int(math.Round(float64(quota) * priceData.ModelRatio))
+		if priceData.ModelRatio != 0 && quota <= 0 {
+			quota = 1
+		}
+		return quota, nil
+	}
+
+	return int(priceData.ModelPrice * common.QuotaPerUnit), nil
+}
+
+func buildTestLogOther(c *gin.Context, info *relaycommon.RelayInfo, priceData types.PriceData, usage *dto.Usage, tieredResult *billingexpr.TieredResult) map[string]interface{} {
+	other := service.GenerateTextOtherInfo(c, info, priceData.ModelRatio, priceData.GroupRatioInfo.GroupRatio, priceData.CompletionRatio,
+		usage.PromptTokensDetails.CachedTokens, priceData.CacheRatio, priceData.ModelPrice, priceData.GroupRatioInfo.GroupSpecialRatio)
+	if tieredResult != nil {
+		service.InjectTieredBillingInfo(other, info, tieredResult)
+	}
+	return other
 }
 
 func coerceTestUsage(usageAny any, isStream bool, estimatePromptTokens int) (*dto.Usage, error) {
@@ -828,8 +889,13 @@ func TestChannel(c *gin.Context) {
 	testModel := c.Query("model")
 	endpointType := c.Query("endpoint_type")
 	isStream, _ := strconv.ParseBool(c.Query("stream"))
+	testUserID, err := resolveChannelTestUserID(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	tik := time.Now()
-	result := testChannel(channel, testModel, endpointType, isStream)
+	result := testChannel(channel, testUserID, testModel, endpointType, isStream)
 	if result.localErr != nil {
 		resp := gin.H{
 			"success": false,
@@ -866,6 +932,10 @@ var testAllChannelsLock sync.Mutex
 var testAllChannelsRunning bool = false
 
 func testAllChannels(notify bool) error {
+	testUserID, err := resolveChannelTestUserID(nil)
+	if err != nil {
+		return err
+	}
 
 	testAllChannelsLock.Lock()
 	if testAllChannelsRunning {
@@ -897,7 +967,7 @@ func testAllChannels(notify bool) error {
 			isChannelEnabled := channel.Status == common.ChannelStatusEnabled
 			testModel, endpointType, isStream := resolveAutoChannelTestArgs(channel)
 			tik := time.Now()
-			result := testChannel(channel, testModel, endpointType, isStream)
+			result := testChannel(channel, testUserID, testModel, endpointType, isStream)
 			tok := time.Now()
 			milliseconds := tok.Sub(tik).Milliseconds()
 
