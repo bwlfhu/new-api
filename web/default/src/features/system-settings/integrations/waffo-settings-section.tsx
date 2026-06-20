@@ -111,7 +111,7 @@ export function WaffoSettingsSection({
 
   const saveMethod = () => {
     if (!methodForm.name.trim())
-      return toast.error(t('Payment method name is required'))
+      {return toast.error(t('Payment method name is required'))}
     if (editingIdx === -1) {
       onPayMethodsChange((prev) => [...prev, methodForm])
     } else {
@@ -138,15 +138,13 @@ export function WaffoSettingsSection({
     }
 
     const reader = new FileReader()
-    reader.onload = (loadEvent) => {
+    reader.addEventListener('load', () => {
       setMethodForm((previous) => ({
         ...previous,
         icon:
-          typeof loadEvent.target?.result === 'string'
-            ? loadEvent.target.result
-            : '',
+          typeof reader.result === 'string' ? reader.result : '',
       }))
-    }
+    })
     reader.readAsDataURL(file)
     event.target.value = ''
   }
@@ -177,13 +175,13 @@ export function WaffoSettingsSection({
             checked={values.WaffoEnabled}
             onCheckedChange={(v) => onValueChange('WaffoEnabled', v)}
             label={t('Enable Waffo')}
-            className='border-b-0 py-0'
+            className='py-0'
           />
           <SettingsSwitchField
             checked={values.WaffoSandbox}
             onCheckedChange={(v) => onValueChange('WaffoSandbox', v)}
             label={t('Sandbox mode')}
-            className='border-b-0 py-0'
+            className='py-0'
           />
         </div>
 
