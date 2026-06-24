@@ -22,6 +22,8 @@ import type {
   DeleteLogsResponse,
   FetchUpstreamRatiosRequest,
   SystemOptionsResponse,
+  SystemTaskListResponse,
+  SystemTaskResponse,
   UpdateOptionRequest,
   UpdateOptionResponse,
   UpstreamChannelsResponse,
@@ -49,6 +51,13 @@ export async function confirmPaymentCompliance() {
 export async function deleteLogsBefore(targetTimestamp: number) {
   const res = await api.delete<DeleteLogsResponse>('/api/log/', {
     params: { target_timestamp: targetTimestamp },
+  })
+  return res.data
+}
+
+export async function listSystemTasks(limit = 20) {
+  const res = await api.get<SystemTaskListResponse>('/api/system-task/list', {
+    params: { limit },
   })
   return res.data
 }

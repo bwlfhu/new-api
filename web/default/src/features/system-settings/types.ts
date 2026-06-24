@@ -56,6 +56,12 @@ export type DeleteLogsResponse = {
   data?: number
 }
 
+export type SystemTaskListResponse = {
+  success: boolean
+  message: string
+  data?: SystemTask[]
+}
+
 export type SiteSettings = {
   'theme.frontend': string
   Notice: string
