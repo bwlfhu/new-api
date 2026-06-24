@@ -283,6 +283,7 @@ func migrateDB() error {
 		&PDEPTokenUsageBucket{},
 		&PDEPTokenUsageFlushRecord{},
 		&PerfMetric{},
+		&SystemInstance{},
 		&SystemTask{},
 		&SystemTaskLock{},
 	)
@@ -336,6 +337,7 @@ func migrateDBFast() error {
 		{&PDEPTokenUsageBucket{}, "PDEPTokenUsageBucket"},
 		{&PDEPTokenUsageFlushRecord{}, "PDEPTokenUsageFlushRecord"},
 		{&PerfMetric{}, "PerfMetric"},
+		{&SystemInstance{}, "SystemInstance"},
 		{&SystemTask{}, "SystemTask"},
 		{&SystemTaskLock{}, "SystemTaskLock"},
 	}
