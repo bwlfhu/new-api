@@ -2533,6 +2533,8 @@
     "视频无法在当前浏览器中播放，这可能是由于：": "影片無法在當前瀏覽器中播放，這可能是由於：",
     "禁用": "禁用",
     "禁用 store 透传": "禁用 store 透傳",
+    "移除 Responses reasoning 输入": "移除 Responses reasoning 輸入",
+    "从 Responses input 中删除 reasoning 项，用于兼容不持久化 rs 项的上游": "從 Responses input 中刪除 reasoning 項，用於相容不持久化 rs 項的上游",
     "禁用2FA失败": "禁用2FA失敗",
     "禁用两步验证": "禁用兩步驗證",
     "禁用全部": "禁用全部",

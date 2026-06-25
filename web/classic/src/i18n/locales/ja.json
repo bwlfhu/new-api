@@ -2523,6 +2523,8 @@
     "视频无法在当前浏览器中播放，这可能是由于：": "The video cannot be played in this browser, possibly because:",
     "禁用": "無効にする",
     "禁用 store 透传": "ストアパススルーを無効にする",
+    "移除 Responses reasoning 输入": "Responses reasoning入力を削除",
+    "从 Responses input 中删除 reasoning 项，用于兼容不持久化 rs 项的上游": "rs項目を永続化しないアップストリーム向けに、Responses inputからreasoning項目を削除します",
     "禁用2FA失败": "2要素認証の無効化に失敗しました",
     "禁用两步验证": "2要素認証を無効にする",
     "禁用全部": "すべてを無効にする",

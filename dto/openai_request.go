@@ -939,6 +939,39 @@ func (r *OpenAIResponsesRequest) SetModelName(modelName string) {
 	}
 }
 
+// RemoveReasoningFromInput strips top-level reasoning items from Responses input.
+func (r *OpenAIResponsesRequest) RemoveReasoningFromInput() error {
+	if len(r.Input) == 0 || common.GetJsonType(r.Input) != "array" {
+		return nil
+	}
+
+	var items []json.RawMessage
+	if err := common.Unmarshal(r.Input, &items); err != nil {
+		return fmt.Errorf("unmarshal responses input: %w", err)
+	}
+
+	filteredItems := make([]json.RawMessage, 0, len(items))
+	for _, raw := range items {
+		var item map[string]any
+		if err := common.Unmarshal(raw, &item); err != nil {
+			filteredItems = append(filteredItems, raw)
+			continue
+		}
+		itemType, _ := item["type"].(string)
+		if strings.HasPrefix(itemType, "reasoning") {
+			continue
+		}
+		filteredItems = append(filteredItems, raw)
+	}
+
+	filteredInput, err := common.Marshal(filteredItems)
+	if err != nil {
+		return fmt.Errorf("marshal filtered responses input: %w", err)
+	}
+	r.Input = filteredInput
+	return nil
+}
+
 func (r *OpenAIResponsesRequest) GetToolsMap() []map[string]any {
 	var toolsMap []map[string]any
 	if len(r.Tools) > 0 {

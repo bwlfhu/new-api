@@ -239,6 +239,7 @@ const EditChannelModal = (props) => {
     // 字段透传控制默认值
     allow_service_tier: false,
     disable_store: false, // false = 允许透传（默认开启）
+    remove_responses_reasoning_input: false,
     allow_safety_identifier: false,
     allow_include_obfuscation: false,
     allow_inference_geo: false,
@@ -987,6 +988,8 @@ const EditChannelModal = (props) => {
           // 读取字段透传控制设置
           data.allow_service_tier = parsedSettings.allow_service_tier || false;
           data.disable_store = parsedSettings.disable_store || false;
+          data.remove_responses_reasoning_input =
+            parsedSettings.remove_responses_reasoning_input || false;
           data.allow_safety_identifier =
             parsedSettings.allow_safety_identifier || false;
           data.allow_include_obfuscation =
@@ -1022,6 +1025,7 @@ const EditChannelModal = (props) => {
           data.is_enterprise_account = false;
           data.allow_service_tier = false;
           data.disable_store = false;
+          data.remove_responses_reasoning_input = false;
           data.allow_safety_identifier = false;
           data.allow_include_obfuscation = false;
           data.skip_v1_in_responses_path = false;
@@ -1041,6 +1045,7 @@ const EditChannelModal = (props) => {
         data.is_enterprise_account = false;
         data.allow_service_tier = false;
         data.disable_store = false;
+        data.remove_responses_reasoning_input = false;
         data.allow_safety_identifier = false;
         data.allow_include_obfuscation = false;
         data.allow_inference_geo = false;
@@ -1917,6 +1922,12 @@ const EditChannelModal = (props) => {
         settings.claude_beta_query = localInputs.claude_beta_query === true;
       }
     }
+    if (localInputs.type === 1 || localInputs.type === 57) {
+      settings.remove_responses_reasoning_input =
+        localInputs.remove_responses_reasoning_input === true;
+    } else if ('remove_responses_reasoning_input' in settings) {
+      delete settings.remove_responses_reasoning_input;
+    }
 
     settings.upstream_model_update_check_enabled =
       localInputs.upstream_model_update_check_enabled === true;
@@ -1958,6 +1969,7 @@ const EditChannelModal = (props) => {
     // 清理字段透传控制的临时字段
     delete localInputs.allow_service_tier;
     delete localInputs.disable_store;
+    delete localInputs.remove_responses_reasoning_input;
     delete localInputs.allow_safety_identifier;
     delete localInputs.allow_include_obfuscation;
     delete localInputs.allow_inference_geo;
@@ -2603,15 +2615,24 @@ const EditChannelModal = (props) => {
                     </Col>
                   </Row>
 
-                  {inputs.type === 1 && (
+                  {(inputs.type === 1 || inputs.type === 57) && (
                     <>
                       <div className='mt-4 mb-2 text-sm font-medium text-gray-700'>
                         {t('字段透传控制')}
                       </div>
-                      <Form.Switch field='allow_service_tier' label={t('允许 service_tier 透传')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('allow_service_tier', value)} extraText={t('service_tier 字段用于指定服务层级，允许透传可能导致实际计费高于预期。默认关闭以避免额外费用')} />
-                      <Form.Switch field='disable_store' label={t('禁用 store 透传')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('disable_store', value)} extraText={t('store 字段用于授权 OpenAI 存储请求数据以评估和优化产品。默认关闭，开启后可能导致 Codex 无法正常使用')} />
-                      <Form.Switch field='allow_safety_identifier' label={t('允许 safety_identifier 透传')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('allow_safety_identifier', value)} extraText={t('safety_identifier 字段用于帮助 OpenAI 识别可能违反使用政策的应用程序用户。默认关闭以保护用户隐私')} />
-                      <Form.Switch field='allow_include_obfuscation' label={t('允许 stream_options.include_obfuscation 透传')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('allow_include_obfuscation', value)} extraText={t('include_obfuscation 用于控制 Responses 流混淆字段。默认关闭以避免客户端关闭该安全保护')} />
+                      {inputs.type === 1 && (
+                        <>
+                          <Form.Switch field='allow_service_tier' label={t('允许 service_tier 透传')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('allow_service_tier', value)} extraText={t('service_tier 字段用于指定服务层级，允许透传可能导致实际计费高于预期。默认关闭以避免额外费用')} />
+                          <Form.Switch field='disable_store' label={t('禁用 store 透传')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('disable_store', value)} extraText={t('store 字段用于授权 OpenAI 存储请求数据以评估和优化产品。默认关闭，开启后可能导致 Codex 无法正常使用')} />
+                        </>
+                      )}
+                      <Form.Switch field='remove_responses_reasoning_input' label={t('移除 Responses reasoning 输入')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('remove_responses_reasoning_input', value)} extraText={t('从 Responses input 中删除 reasoning 项，用于兼容不持久化 rs 项的上游')} />
+                      {inputs.type === 1 && (
+                        <>
+                          <Form.Switch field='allow_safety_identifier' label={t('允许 safety_identifier 透传')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('allow_safety_identifier', value)} extraText={t('safety_identifier 字段用于帮助 OpenAI 识别可能违反使用政策的应用程序用户。默认关闭以保护用户隐私')} />
+                          <Form.Switch field='allow_include_obfuscation' label={t('允许 stream_options.include_obfuscation 透传')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('allow_include_obfuscation', value)} extraText={t('include_obfuscation 用于控制 Responses 流混淆字段。默认关闭以避免客户端关闭该安全保护')} />
+                        </>
+                      )}
                     </>
                   )}
 

@@ -205,6 +205,49 @@ func TestConvertOpenAIResponsesRequest_PreservesCompactContextFields(t *testing.
 	require.Equal(t, true, payload["parallel_tool_calls"])
 }
 
+func TestConvertOpenAIResponsesRequest_RemovesReasoningInputWhenChannelSettingEnabled(t *testing.T) {
+	t.Parallel()
+
+	adaptor := &Adaptor{}
+	info := &relaycommon.RelayInfo{
+		RelayMode: relayconstant.RelayModeResponses,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				RemoveResponsesReasoningInput: true,
+			},
+		},
+	}
+	request := dto.OpenAIResponsesRequest{
+		Model: "gpt-5.5",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+			{"type":"reasoning","id":"rs_123","encrypted_content":"stale"},
+			{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"}
+		]`),
+	}
+
+	converted, err := adaptor.ConvertOpenAIResponsesRequest(nil, info, request)
+	require.NoError(t, err)
+
+	data, err := common.Marshal(converted)
+	require.NoError(t, err)
+
+	var payload map[string]json.RawMessage
+	err = common.Unmarshal(data, &payload)
+	require.NoError(t, err)
+
+	var input []map[string]any
+	err = common.Unmarshal(payload["input"], &input)
+	require.NoError(t, err)
+	require.Len(t, input, 2)
+	require.Equal(t, "message", input[0]["type"])
+	require.Equal(t, "function_call", input[1]["type"])
+	var store bool
+	err = common.Unmarshal(payload["store"], &store)
+	require.NoError(t, err)
+	require.False(t, store)
+}
+
 func TestGetRequestURLForResponsesCompactUsesStandardEndpointWithAPIKey(t *testing.T) {
 	t.Parallel()
 

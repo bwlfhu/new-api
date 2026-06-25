@@ -1,0 +1,4 @@
+interface:
+  display_name: "Remote Deploy"
+  short_description: "Deploy new-api to the 172.16.22.3 Docker host"
+  default_prompt: "Use $remote-deploy to deploy this new-api fork to the remote Docker host."

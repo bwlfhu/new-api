@@ -2567,6 +2567,8 @@
     "视频无法在当前浏览器中播放，这可能是由于：": "The video cannot be played in this browser, possibly because:",
     "禁用": "Disable",
     "禁用 store 透传": "Disable store Pass-through",
+    "移除 Responses reasoning 输入": "Remove Responses reasoning input",
+    "从 Responses input 中删除 reasoning 项，用于兼容不持久化 rs 项的上游": "Drop reasoning items from Responses input for upstreams that do not persist rs items",
     "禁用2FA失败": "Failed to disable Two-Factor Authentication",
     "禁用两步验证": "Disable two-factor authentication",
     "禁用全部": "Disable all",

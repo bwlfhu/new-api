@@ -2759,6 +2759,8 @@
     "禁用": "Vô hiệu hóa",
     "禁用 Passkey": "Vô hiệu hóa Passkey",
     "禁用 store 透传": "Vô hiệu hóa truyền qua store",
+    "移除 Responses reasoning 输入": "Xóa reasoning input của Responses",
+    "从 Responses input 中删除 reasoning 项，用于兼容不持久化 rs 项的上游": "Xóa các mục reasoning khỏi Responses input để tương thích với upstream không lưu các mục rs",
     "禁用2FA失败": "Vô hiệu hóa xác thực hai yếu tố thất bại",
     "禁用两步验证": "Vô hiệu hóa xác thực hai yếu tố",
     "禁用两步验证（2FA）": "Vô hiệu hóa xác thực hai yếu tố (2FA)",

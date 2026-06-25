@@ -1,0 +1,4 @@
+interface:
+  display_name: "Remote Debug"
+  short_description: "Inspect and debug the remote new-api Docker stack"
+  default_prompt: "Use $remote-debug to inspect the remote new-api deployment status and logs."

@@ -103,6 +103,11 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if len(request.Instructions) == 0 {
 		request.Instructions = json.RawMessage(`""`)
 	}
+	if info != nil && info.ChannelMeta != nil && info.ChannelMeta.ChannelOtherSettings.RemoveResponsesReasoningInput {
+		if err := request.RemoveReasoningFromInput(); err != nil {
+			return nil, err
+		}
+	}
 
 	if isCompact {
 		if useBackendAPI {
